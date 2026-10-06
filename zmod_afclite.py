@@ -6,6 +6,14 @@ LOGGER = logging.getLogger(__name__)
 FILE_CONFIG = "/usr/data/config/mod_data/file.json"
 
 
+def _zmod_toolhead_state(zmod_color, eventtime):
+    """Return (active IFS slot, extruder sensor) as Zmod's own status reports
+    them. get_status() is cached by file mtime and has no side effects, unlike
+    get_current_channel(), which re-reads the config file on every call."""
+    status = zmod_color.get_status(eventtime)
+    return int(status.get("channel", 0)), bool(status.get("extruder_sensor"))
+
+
 class AFCState:
     IDLE = "idle"
 
@@ -66,7 +74,7 @@ class AFC:
         current_slot = None
         if self.lanes:
             zmod_color = self.printer.lookup_object("zmod_color")
-            current_slot = zmod_color.get_current_channel()
+            current_slot, _ = _zmod_toolhead_state(zmod_color, eventtime)
 
         current_lane = None
         for lane in self.lanes.values():
@@ -119,8 +127,7 @@ class AFCLane:
 
         required_methods = (
             (self.zmod_color, "get_printer_data_detail"),
-            (self.zmod_color, "get_current_channel"),
-            (self.zmod_color, "get_extruder_sensor"),
+            (self.zmod_color, "get_status"),
             (self.zmod_color, "cmd_IN_ZCOLOR"),
             (self.zmod_color, "cmd_CHANGE_ZCOLOR"),
             (self.zmod_ifs, "get_port"),
@@ -178,11 +185,10 @@ class AFCLane:
     def get_status(self, eventtime=None):
         slot = self._read_slot()
         loaded = bool(self.zmod_ifs.get_port(self.zmod_slot))
-        current_slot = self.zmod_color.get_current_channel()
-        tool_loaded = (
-            current_slot == self.zmod_slot
-            and bool(self.zmod_color.get_extruder_sensor())
+        current_slot, extruder_sensor = _zmod_toolhead_state(
+            self.zmod_color, eventtime
         )
+        tool_loaded = current_slot == self.zmod_slot and extruder_sensor
         color = str(slot.get("materialColor", "#161616"))
         if not color.startswith("#"):
             color = f"#{color}"
