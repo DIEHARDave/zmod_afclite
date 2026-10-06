@@ -26,14 +26,14 @@ class AFCLaneState:
 class AFC:
     def __init__(self, config):
         self.printer = config.get_printer()
-        self.name = "ZMOD"
+        self.name = "IFS"
         self.lanes = {
             f"E{index}": AFCLane(
                 self.printer,
                 f"E{index}",
                 index,
                 index + 1,
-                "ZMOD",
+                self.name,
                 "extruder",
             )
             for index in range(4)
@@ -43,7 +43,7 @@ class AFC:
 
         objects = {
             "AFC": self,
-            "AFC_unit ZMOD": self.unit,
+            f"AFC_unit {self.name}": self.unit,
             **{
                 f"AFC_lane {lane.name}": lane
                 for lane in self.lanes.values()
@@ -97,7 +97,7 @@ class AFC:
             "quiet_mode": False,
             "position_saved": False,
             # Mainsail/Fluidd expect "<type> <name>" and look the unit up as
-            # the "AFC_<type> <name>" object, i.e. "AFC_unit ZMOD".
+            # the "AFC_<type> <name>" object, i.e. "AFC_unit IFS".
             "units": [f"unit {name}" for name in self.units],
             "lanes": list(self.lanes),
             # No AFC_extruder object exists, so list none (as AFC-Lite does)
