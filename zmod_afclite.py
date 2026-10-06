@@ -88,9 +88,13 @@ class AFC:
             "bypass_state": False,
             "quiet_mode": False,
             "position_saved": False,
-            "units": list(self.units),
+            # Mainsail/Fluidd expect "<type> <name>" and look the unit up as
+            # the "AFC_<type> <name>" object, i.e. "AFC_unit ZMOD".
+            "units": [f"unit {name}" for name in self.units],
             "lanes": list(self.lanes),
-            "extruders": ["extruder"],
+            # No AFC_extruder object exists, so list none (as AFC-Lite does)
+            # instead of making the UI draw an empty toolhead card.
+            "extruders": [],
             "hubs": [],
             "buffers": [],
             "message": "",
@@ -196,7 +200,7 @@ class AFCLane:
         color = f"#{rgb}"
         material = str(slot.get("materialName", "NONE")).upper()
 
-        return {
+        status = {
             "name": self.name,
             "unit": self.unit_name,
             "lane": self.lane_index,
@@ -210,12 +214,16 @@ class AFCLane:
             "material": material,
             "spool_id": None,
             "color": color,
-            "weight": 1000,
+            # weight intentionally omitted; Zmod doesn't track it and the UI
+            # hides it when absent.
             "runout_lane": "NONE",
             "filament_status": "unknown",
             "filament_status_led": "gray",
             "status": AFCLaneState.LOADED if loaded else AFCLaneState.EMPTY,
         }
+        if material not in ("NONE", "N/A", "?", ""):
+            status["filament_name"] = material
+        return status
 
 
 class AFCUnit:
@@ -234,7 +242,7 @@ class AFCUnit:
     def get_status(self, eventtime=None):
         return {
             "lanes": list(self.lanes),
-            "extruders": ["extruder"],
+            "extruders": [],
             "hubs": [],
             "buffers": [],
         }
