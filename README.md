@@ -11,6 +11,22 @@ The plugin presents Zmod IFS slots 1-4 as AFC lanes E0-E3. All lanes use the
 AD5X's single Klipper `extruder`; Zmod's `zmod_color` and `zmod_ifs` objects
 provide filament presence, current slot, color, and material information.
 
+## Screenshots
+
+Mainsail's AFC panel with the AD5X IFS. Each lane shows its per-print tool
+mapping, and the active slot is outlined:
+
+![AFC panel showing the IFS unit with lanes E0-E3](docs/images/afc-panel.png)
+
+With the IFS Jacker plugin, each chained IFS gets its own unit of four lanes:
+
+![AFC panel showing units IFS 1 and IFS 2 with lanes E0-E7](docs/images/afc-panel-ifs-jacker.png)
+
+Clicking a spool opens Mainsail's filament dialog. The weight is prefilled, so
+only the material and color need picking:
+
+![Filament dialog for lane E1 with material, weight and color](docs/images/filament-dialog.png)
+
 ## Supported
 
 - AFC-style status for the four Zmod IFS slots.
