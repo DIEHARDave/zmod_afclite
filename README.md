@@ -58,6 +58,21 @@ The uninstall script removes only this plugin's namespaced link and exact
 legacy links from the previous installer version. It never removes regular
 Klipper/Zmod files or links owned by another plugin.
 
+## Releases
+
+The update-manager entry uses `channel: stable`, so printers update to the
+newest **version tag**, not the newest commit on `main`. Zmod resets plugin
+checkouts to that tag. To ship changes, tag the commit and push the tag:
+
+```sh
+git tag -a v0.1.1 -m "v0.1.1"
+git push origin v0.1.1
+```
+
+After the update, run `REBOOT` rather than `FIRMWARE_RESTART`: Klipper keeps
+already-imported Python modules, so only a full restart loads the new
+`zmod_afclite.py`.
+
 ## Verify
 
 The plugin lives and updates under its own Moonraker update-manager entry. It
