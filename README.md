@@ -28,11 +28,10 @@ provide filament presence, current slot, color, and material information.
 
 ## Install
 
-Publish this folder as its own Git repository, then add the section in
-`zmod_afclite.moonraker.conf.example` to Zmod's
-`mod_data/user.moonraker.conf`. Replace `YOUR_GITHUB_OWNER` with the repository
-owner and adjust the plugin path if your Zmod installation uses another
-plugin directory. Then run:
+Add the section in `zmod_afclite.moonraker.conf.example` to Zmod's
+`mod_data/user.moonraker.conf`. It points at
+<https://github.com/DIEHARDave/zmod_afclite>; adjust the plugin path if your
+Zmod installation uses another plugin directory. Then run:
 
 ```gcode
 ENABLE_PLUGIN name=zmod_afclite
