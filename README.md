@@ -22,6 +22,32 @@ provide filament presence, current slot, color, and material information.
   unit (`IFS_1`, `IFS_2`, ...). Without it, the plugin shows the single `IFS`
   unit with four lanes. Up to 16 lanes update live; channels beyond that appear
   after reloading the web UI.
+- OrcaSlicer filament sync: slot colors and materials are mirrored into
+  Moonraker's `lane_data` namespace (see below).
+
+## OrcaSlicer lane data
+
+OrcaSlicer reads each slot's filament from Moonraker's `lane_data` database
+namespace. Whenever a slot's color or material changes in Zmod (from the AFC
+panel, the printer screen, or the `COLOR` macro), the plugin updates that
+slot's `laneN` entry, where `N` is the 1-based slot number and `lane` holds the
+0-based slot index as a string.
+
+On the AD5X, HelixScreen and SpoolSync also keep `lane1`..`lane4` there, so
+the plugin only merges `color` and `material` into existing entries and
+leaves temperatures and other tools' fields alone. It skips color or material
+when HelixScreen has locked them (`helix_locked_color`,
+`helix_locked_material`), and after the first sync it writes a lane only when
+Zmod's own data for it changes. It deletes only `laneN` entries it created
+itself, once their slot no longer exists (e.g. an IFS Jacker unit is removed).
+
+Options in the `[zmod_afclite]` section:
+
+```ini
+[zmod_afclite]
+lane_data: True                         # set False to disable the sync
+moonraker_url: http://127.0.0.1:7125    # Moonraker as seen from Klipper
+```
 
 ## Not supported
 

@@ -1,10 +1,24 @@
+import copy
 import json
 import logging
 import os
+import threading
+import urllib.error
+import urllib.parse
+import urllib.request
 
 
 LOGGER = logging.getLogger(__name__)
 FILE_CONFIG = "/usr/data/config/mod_data/file.json"
+
+# OrcaSlicer reads filament per slot from Moonraker's lane_data namespace. On the
+# AD5X, HelixScreen and SpoolSync already keep "lane1".."lane4" there, so the
+# same keys are used and only color/material are merged into existing entries.
+LANE_DATA_NAMESPACE = "lane_data"
+LANE_DATA_POLL = 2.0
+LANE_DATA_RETRY = 10.0
+LANE_DATA_OWNER_KEY = "zmod_afclite"
+UNSET_MATERIALS = ("NONE", "N/A", "?", "")
 
 # Zmod's slot count (color_limit) is 4 for a single IFS, and grows to the IFS
 # Jacker's detected channel count when it chains several IFS units together.
@@ -135,6 +149,142 @@ class ZmodState:
         return "#FFFFFF"
 
 
+class LaneDataSync:
+    """Mirror Zmod's slot color/material into Moonraker's lane_data namespace.
+
+    The reactor timer only takes a snapshot of Zmod's slots; HTTP runs on a
+    worker thread so Klipper never blocks on Moonraker. After one reconcile at
+    startup, a lane is written only when Zmod's own data for it changes, so
+    other writers (HelixScreen, SpoolSync) are never fought over."""
+
+    def __init__(self, printer, state, url):
+        self.printer = printer
+        self.reactor = printer.get_reactor()
+        self.state = state
+        self.url = url.rstrip("/") + "/server/database/item"
+        self._lock = threading.Lock()
+        self._wake = threading.Event()
+        self._stop = False
+        self._desired = None
+        self._slot_count = 0
+        self._synced = {}
+        self._timer = None
+        self._thread = None
+        printer.register_event_handler("klippy:ready", self._handle_ready)
+        printer.register_event_handler("klippy:disconnect", self._handle_disconnect)
+
+    def _handle_ready(self):
+        self._thread = threading.Thread(target=self._run, name="zmod_afclite lane_data")
+        self._thread.daemon = True
+        self._thread.start()
+        self._timer = self.reactor.register_timer(self._poll, self.reactor.NOW)
+
+    def _handle_disconnect(self):
+        # Klipper RESTART builds new objects in the same process; stop this
+        # instance's thread so only the new one writes.
+        self._stop = True
+        self._wake.set()
+        if self._timer is not None:
+            self.reactor.unregister_timer(self._timer)
+            self._timer = None
+
+    def _poll(self, eventtime):
+        if self.state.zmod_color is None:
+            return eventtime + LANE_DATA_POLL
+        try:
+            snapshot = self.state.get(eventtime)
+            desired = {}
+            for zmod_slot in range(1, snapshot["slot_count"] + 1):
+                slot = snapshot["slots"].get(zmod_slot)
+                if slot is None:
+                    continue
+                material = str(slot.get("Material", "")).upper()
+                desired[f"lane{zmod_slot}"] = {
+                    "lane": str(zmod_slot - 1),
+                    "color": self.state.color(zmod_slot, slot),
+                    "material": None if material in UNSET_MATERIALS else material,
+                }
+            with self._lock:
+                changed = desired != self._desired
+                self._desired = desired
+                self._slot_count = snapshot["slot_count"]
+            if changed:
+                self._wake.set()
+        except Exception:
+            LOGGER.exception("Zmod AFC Lite: unable to read slots for lane_data")
+        return eventtime + LANE_DATA_POLL
+
+    def _run(self):
+        while not self._stop:
+            self._wake.wait()
+            self._wake.clear()
+            if self._stop:
+                break
+            with self._lock:
+                desired = copy.deepcopy(self._desired)
+                slot_count = self._slot_count
+            if desired is None:
+                continue
+            try:
+                self._sync(desired, slot_count)
+            except Exception as exc:
+                LOGGER.warning("Zmod AFC Lite: lane_data sync failed, retrying: %s", exc)
+                self._wake.wait(LANE_DATA_RETRY)
+                self._wake.set()
+
+    def _request(self, method, query=None, body=None):
+        url = self.url
+        if query:
+            url += "?" + urllib.parse.urlencode(query)
+        data = None if body is None else json.dumps(body).encode()
+        request = urllib.request.Request(
+            url, data=data, method=method,
+            headers={"Content-Type": "application/json"},
+        )
+        with urllib.request.urlopen(request, timeout=5) as response:
+            return json.load(response)
+
+    def _sync(self, desired, slot_count):
+        try:
+            current = self._request("GET", {"namespace": LANE_DATA_NAMESPACE})
+            current = current.get("result", {}).get("value") or {}
+        except urllib.error.HTTPError as exc:
+            if exc.code != 404:  # 404: the namespace does not exist yet
+                raise
+            current = {}
+
+        for key, zmod in desired.items():
+            if self._synced.get(key) == zmod:
+                continue
+            existing = current.get(key)
+            value = copy.deepcopy(existing) if isinstance(existing, dict) else {
+                LANE_DATA_OWNER_KEY: True,
+            }
+            value["lane"] = zmod["lane"]
+            if not value.get("helix_locked_color"):
+                value["color"] = zmod["color"]
+            if zmod["material"] is not None and not value.get("helix_locked_material"):
+                value["material"] = zmod["material"]
+            if value != existing:
+                self._request("POST", body={
+                    "namespace": LANE_DATA_NAMESPACE, "key": key, "value": value,
+                })
+            self._synced[key] = zmod
+
+        # Remove only entries this plugin created for slots that no longer
+        # exist (an IFS Jacker unit was removed); never other writers' lanes.
+        for key, existing in current.items():
+            if not (isinstance(existing, dict) and existing.get(LANE_DATA_OWNER_KEY)):
+                continue
+            try:
+                slot = int(key[len("lane"):]) if key.startswith("lane") else 0
+            except ValueError:
+                continue
+            if slot > slot_count:
+                self._request("DELETE", {"namespace": LANE_DATA_NAMESPACE, "key": key})
+                self._synced.pop(key, None)
+
+
 def unit_names(unit_count):
     """A single IFS keeps the plain "IFS" unit; chained IFS units (IFS Jacker)
     become "IFS_1", "IFS_2", ... with four lanes each."""
@@ -159,6 +309,13 @@ class AFC:
                 )
         for name, obj in objects.items():
             self.printer.add_object(name, obj)
+
+        self.lane_data = None
+        if config.getboolean("lane_data", True):
+            self.lane_data = LaneDataSync(
+                self.printer, self.state,
+                config.get("moonraker_url", "http://127.0.0.1:7125"),
+            )
 
         self.printer.register_event_handler("klippy:ready", self._handle_ready)
 
