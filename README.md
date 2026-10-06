@@ -13,8 +13,11 @@ provide filament presence, current slot, color, and material information.
 
 ## Screenshots
 
-Mainsail's AFC panel with the AD5X IFS. Each lane shows its per-print tool
-mapping, and the active slot is outlined:
+The plugin works with the AFC panels in both Mainsail and Fluidd; these
+screenshots are from Mainsail.
+
+The AFC panel with the AD5X IFS. Each lane shows its per-print tool mapping,
+and the active slot is outlined:
 
 ![AFC panel showing the IFS unit with lanes E0-E3](docs/images/afc-panel.png)
 
@@ -22,8 +25,8 @@ With the IFS Jacker plugin, each chained IFS gets its own unit of four lanes:
 
 ![AFC panel showing units IFS 1 and IFS 2 with lanes E0-E7](docs/images/afc-panel-ifs-jacker.png)
 
-Clicking a spool opens Mainsail's filament dialog. The weight is prefilled, so
-only the material and color need picking:
+Clicking a spool opens the filament dialog. The weight is prefilled, so only
+the material and color need picking:
 
 ![Filament dialog for lane E1 with material, weight and color](docs/images/filament-dialog.png)
 
@@ -37,7 +40,7 @@ only the material and color need picking:
   while it is loaded, every channel it detects becomes a lane, grouped four per
   unit (`IFS_1`, `IFS_2`, ...). Without it, the plugin shows the single `IFS`
   unit with four lanes. Up to 16 lanes update live; channels beyond that appear
-  after reloading the web UI.
+  after reloading Mainsail or Fluidd.
 - OrcaSlicer filament sync: slot colors and materials are mirrored into
   Moonraker's `lane_data` namespace (see below).
 
@@ -45,7 +48,7 @@ only the material and color need picking:
 
 OrcaSlicer reads each slot's filament from Moonraker's `lane_data` database
 namespace. Whenever a slot's color or material changes in Zmod (from the AFC
-panel, the printer screen, or the `COLOR` macro), the plugin updates that
+panel in Mainsail or Fluidd, the printer screen, or the `COLOR` macro), the plugin updates that
 slot's `laneN` entry, where `N` is the 1-based slot number and `lane` holds the
 0-based slot index as a string.
 
@@ -68,8 +71,8 @@ default_weight: 1000                    # grams shown for lanes without a weight
 
 ## Filament weight
 
-Zmod does not measure filament. Mainsail's filament dialog will not apply a
-color or material until the lane has a weight, so every lane reports
+Zmod does not measure filament. The filament dialogs in Mainsail and Fluidd
+will not apply a color or material until the lane has a weight, so every lane reports
 `default_weight` (1000 g) until you enter one. A weight entered in the dialog
 (`SET_WEIGHT`) is saved per lane in `save_variables` as
 `zmod_afclite_weight_<lane>` and survives reboots. Set `default_weight: 0` to
@@ -134,11 +137,13 @@ already-imported Python modules, so only a full restart loads the new
 
 The plugin lives and updates under its own Moonraker update-manager entry. It
 does not patch Zmod's source, bundled Klipper modules, or printer configuration
-outside its plugin config. AFC UI compatibility necessarily uses the standard
+outside its plugin config. Compatibility with the AFC panels in Mainsail and
+Fluidd necessarily uses the standard
 public Klipper objects and macros (`AFC`, `AFC_lane`, `CHANGE_TOOL`, and
 related names); do not enable another AFC implementation at the same time.
 
-After Klipper restarts, check that the AFC panel shows lanes E0-E3. Try a
+After Klipper restarts, check that the AFC panel in Mainsail or Fluidd shows
+lanes E0-E3. Try a
 non-destructive status query before using the load/unload controls. The
 adapter requires the Zmod AD5X Klipper objects `zmod_color`, `zmod_ifs`,
 `IN_ZCOLOR`, and `CHANGE_ZCOLOR`.
