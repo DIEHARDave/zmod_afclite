@@ -69,6 +69,19 @@ moonraker_url: http://127.0.0.1:7125    # Moonraker as seen from Klipper
 default_weight: 1000                    # grams shown for lanes without a weight
 ```
 
+## Material selection
+
+The filament dialog's material field in Mainsail and Fluidd is a free-text
+box; the plugin cannot turn it into a dropdown. Instead, `SET_MATERIAL` checks
+what you typed against the printer's own material list (`valid_types`
+reported by Zmod: the built-in types plus any custom `filament_<NAME>`
+entries in `[zmod_ifs]`, without the ones in `hide_filament_types`):
+
+- an exact name, in any case (`petg`), is applied directly;
+- part of a name (`pet`, `cf`) opens a prompt with buttons for the matching
+  materials;
+- anything else (a typo, or `?`) opens the prompt with every material.
+
 ## Filament weight
 
 Zmod does not measure filament. The filament dialogs in Mainsail and Fluidd
