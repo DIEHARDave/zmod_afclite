@@ -19,6 +19,8 @@ LANE_DATA_POLL = 2.0
 LANE_DATA_RETRY = 10.0
 LANE_DATA_OWNER_KEY = "zmod_afclite"
 UNSET_MATERIALS = ("NONE", "N/A", "?", "")
+# save_variables key for a lane's weight; keep in sync with SET_WEIGHT.
+WEIGHT_VARIABLE_PREFIX = "zmod_afclite_weight_"
 
 # Zmod's slot count (color_limit) is 4 for a single IFS, and grows to the IFS
 # Jacker's detected channel count when it chains several IFS units together.
@@ -50,6 +52,8 @@ class ZmodState:
         self.on_slot_count = on_slot_count
         self.zmod_color = None
         self.ifs_jacker = False
+        self.save_variables = None
+        self.default_weight = 0.
         self._eventtime = None
         self._snapshot = None
         self._mapping_mtime = None
@@ -67,6 +71,8 @@ class ZmodState:
         # Only the IFS Jacker plugin chains extra IFS units; without it, a
         # color_limit above 4 does not mean more physical slots.
         self.ifs_jacker = self.printer.lookup_object("ifs_jacker", None) is not None
+        # Lane weights set through SET_WEIGHT are kept in Zmod's save_variables.
+        self.save_variables = self.printer.lookup_object("save_variables", None)
 
     def get(self, eventtime):
         if self._snapshot is None or eventtime is None or eventtime != self._eventtime:
@@ -95,6 +101,7 @@ class ZmodState:
             "extruder_sensor": bool(status.get("extruder_sensor")),
             "slots": slots,
             "mapping": self._read_mapping(),
+            "weights": dict(getattr(self.save_variables, "allVariables", None) or {}),
         }
 
     def _read_mapping(self):
@@ -297,6 +304,9 @@ class AFC:
     def __init__(self, config):
         self.printer = config.get_printer()
         self.state = ZmodState(self.printer, self._ensure_slots)
+        # Mainsail's filament dialog keeps "Set" disabled until the lane has a
+        # weight, so report one by default; 0 hides weights again.
+        self.state.default_weight = config.getfloat("default_weight", 1000., minval=0.)
         self.lanes = {}
         self.units = {}
 
@@ -432,16 +442,26 @@ class AFCLane:
             "material": material,
             "spool_id": None,
             "color": self.state.color(self.zmod_slot, slot) if active else "#FFFFFF",
-            # weight intentionally omitted; Zmod doesn't track it and the UI
-            # hides it when absent.
             "runout_lane": "NONE",
             "filament_status": "unknown",
             "filament_status_led": "gray",
             "status": AFCLaneState.LOADED if loaded else AFCLaneState.EMPTY,
         }
-        if material not in ("NONE", "N/A", "?", ""):
+        if material not in UNSET_MATERIALS:
             status["filament_name"] = material
+        weight = self.weight(state)
+        if weight > 0:
+            status["weight"] = weight
         return status
+
+    def weight(self, state):
+        """Weight saved by SET_WEIGHT, else the configured default. Zmod does
+        not measure filament, so this is only what the user entered."""
+        saved = state["weights"].get(f"{WEIGHT_VARIABLE_PREFIX}{self.name.lower()}")
+        try:
+            return max(0, round(float(saved)))
+        except (TypeError, ValueError):
+            return round(self.state.default_weight)
 
 
 class AFCUnit:

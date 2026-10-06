@@ -47,7 +47,17 @@ Options in the `[zmod_afclite]` section:
 [zmod_afclite]
 lane_data: True                         # set False to disable the sync
 moonraker_url: http://127.0.0.1:7125    # Moonraker as seen from Klipper
+default_weight: 1000                    # grams shown for lanes without a weight
 ```
+
+## Filament weight
+
+Zmod does not measure filament. Mainsail's filament dialog will not apply a
+color or material until the lane has a weight, so every lane reports
+`default_weight` (1000 g) until you enter one. A weight entered in the dialog
+(`SET_WEIGHT`) is saved per lane in `save_variables` as
+`zmod_afclite_weight_<lane>` and survives reboots. Set `default_weight: 0` to
+hide weights, at the cost of entering one each time you pick a filament.
 
 ## Not supported
 
