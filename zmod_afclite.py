@@ -1,17 +1,21 @@
 import json
 import logging
+import os
 
 
 LOGGER = logging.getLogger(__name__)
 FILE_CONFIG = "/usr/data/config/mod_data/file.json"
 
-
-def _zmod_toolhead_state(zmod_color, eventtime):
-    """Return (active IFS slot, extruder sensor) as Zmod's own status reports
-    them. get_status() is cached by file mtime and has no side effects, unlike
-    get_current_channel(), which re-reads the config file on every call."""
-    status = zmod_color.get_status(eventtime)
-    return int(status.get("channel", 0)), bool(status.get("extruder_sensor"))
+# Zmod's slot count (color_limit) is 4 for a single IFS, and grows to the IFS
+# Jacker's detected channel count when it chains several IFS units together.
+# Lanes beyond the first IFS are only shown while the IFS Jacker plugin is
+# loaded. The UI only subscribes to objects that exist when it connects, so
+# lanes for up to four IFS units are registered up front and listed only while
+# Zmod reports the slot; any further lanes are registered as they are detected
+# and appear after the UI reconnects.
+PREREGISTERED_SLOTS = 16
+SLOTS_PER_UNIT = 4
+UNIT_NAME = "IFS"
 
 
 class AFCState:
@@ -23,32 +27,130 @@ class AFCLaneState:
     LOADED = "loaded"
 
 
+class ZmodState:
+    """One parsed snapshot of Zmod's IFS status per Klipper status poll, shared
+    by the AFC, unit and lane objects so zmod_color is queried once per poll."""
+
+    def __init__(self, printer, on_slot_count):
+        self.printer = printer
+        self.on_slot_count = on_slot_count
+        self.zmod_color = None
+        self.ifs_jacker = False
+        self._eventtime = None
+        self._snapshot = None
+        self._mapping_mtime = None
+        self._mapping = {}
+        self._bad_colors = set()
+
+    def handle_ready(self):
+        self.zmod_color = self.printer.lookup_object("zmod_color")
+        for method in ("get_status", "cmd_IN_ZCOLOR", "cmd_CHANGE_ZCOLOR"):
+            if not callable(getattr(self.zmod_color, method, None)):
+                raise RuntimeError(
+                    "Zmod AFC Lite requires Zmod AD5X method "
+                    f"{self.zmod_color.__class__.__name__}.{method}"
+                )
+        # Only the IFS Jacker plugin chains extra IFS units; without it, a
+        # color_limit above 4 does not mean more physical slots.
+        self.ifs_jacker = self.printer.lookup_object("ifs_jacker", None) is not None
+
+    def get(self, eventtime):
+        if self._snapshot is None or eventtime is None or eventtime != self._eventtime:
+            self._snapshot = self._read(eventtime)
+            self._eventtime = eventtime
+        return self._snapshot
+
+    def _read(self, eventtime):
+        # get_status() is cached by file mtime and has no side effects, unlike
+        # get_current_channel(), which re-reads the config file on every call.
+        status = self.zmod_color.get_status(eventtime)
+        slot_count = max(1, int(status.get("color_limit", SLOTS_PER_UNIT)))
+        if not self.ifs_jacker:
+            slot_count = min(slot_count, SLOTS_PER_UNIT)
+        self.on_slot_count(slot_count)
+        slots = {}
+        for slot in status.get("slots", []):
+            try:
+                slots[int(slot.get("ID"))] = slot
+            except (TypeError, ValueError):
+                continue
+        return {
+            "slot_count": slot_count,
+            "unit_count": -(-slot_count // SLOTS_PER_UNIT),
+            "current_slot": int(status.get("channel", 0)),
+            "extruder_sensor": bool(status.get("extruder_sensor")),
+            "slots": slots,
+            "mapping": self._read_mapping(),
+        }
+
+    def _read_mapping(self):
+        """Zmod's per-print tool-to-slot mapping as {slot: "T<n>"}, re-read
+        only when file.json changes."""
+        try:
+            mtime = os.stat(FILE_CONFIG).st_mtime
+        except OSError:
+            self._mapping_mtime = None
+            self._mapping = {}
+            return self._mapping
+        if mtime == self._mapping_mtime:
+            return self._mapping
+
+        self._mapping_mtime = mtime
+        self._mapping = {}
+        try:
+            with open(FILE_CONFIG, "r", encoding="utf-8") as config_file:
+                mapping = json.load(config_file)
+        except (OSError, json.JSONDecodeError) as exc:
+            LOGGER.error("Unable to read Zmod tool-to-slot mapping: %s", exc)
+            return self._mapping
+
+        if not isinstance(mapping, list):
+            LOGGER.error("Zmod tool-to-slot mapping is not a list")
+            return self._mapping
+
+        for tool_index, slot in enumerate(mapping):
+            try:
+                self._mapping.setdefault(int(slot), f"T{tool_index}")
+            except (TypeError, ValueError):
+                LOGGER.error(
+                    "Invalid slot value in Zmod tool-to-slot mapping: %r", slot
+                )
+                self._mapping = {}
+                break
+        return self._mapping
+
+    def color(self, zmod_slot, slot):
+        rgb = str(slot.get("HEX", "")).replace("#", "").upper()[:6]
+        try:
+            if len(rgb) == 6:
+                int(rgb, 16)
+                return f"#{rgb}"
+        except ValueError:
+            pass
+        if zmod_slot not in self._bad_colors:
+            self._bad_colors.add(zmod_slot)
+            LOGGER.warning(
+                "Zmod returned invalid color %r for IFS slot %d", rgb, zmod_slot
+            )
+        return "#FFFFFF"
+
+
+def unit_names(unit_count):
+    """A single IFS keeps the plain "IFS" unit; chained IFS units (IFS Jacker)
+    become "IFS_1", "IFS_2", ... with four lanes each."""
+    if unit_count <= 1:
+        return [UNIT_NAME]
+    return [f"{UNIT_NAME}_{index + 1}" for index in range(unit_count)]
+
+
 class AFC:
     def __init__(self, config):
         self.printer = config.get_printer()
-        self.name = "IFS"
-        self.lanes = {
-            f"E{index}": AFCLane(
-                self.printer,
-                f"E{index}",
-                index,
-                index + 1,
-                self.name,
-                "extruder",
-            )
-            for index in range(4)
-        }
-        self.unit = AFCUnit(self.printer, self.name, self.lanes)
-        self.units = {self.name: self.unit}
+        self.state = ZmodState(self.printer, self._ensure_slots)
+        self.lanes = {}
+        self.units = {}
 
-        objects = {
-            "AFC": self,
-            f"AFC_unit {self.name}": self.unit,
-            **{
-                f"AFC_lane {lane.name}": lane
-                for lane in self.lanes.values()
-            },
-        }
+        objects = {"AFC": self, **self._new_objects(PREREGISTERED_SLOTS)}
         for name in objects:
             if self.printer.lookup_object(name, None) is not None:
                 raise config.error(
@@ -61,26 +163,49 @@ class AFC:
         self.printer.register_event_handler("klippy:ready", self._handle_ready)
 
     def _handle_ready(self):
-        slots = [lane.zmod_slot for lane in self.lanes.values()]
-        if len(slots) != 4 or set(slots) != {1, 2, 3, 4}:
-            raise RuntimeError(
-                "Zmod AFC Lite requires four unique lanes mapped to IFS slots 1-4"
-            )
-        for lane in self.lanes.values():
-            lane._handle_ready()
-        self.unit._handle_ready()
+        self.state.handle_ready()
+
+    def _new_objects(self, slot_count):
+        """Create the lane and unit objects needed for slot_count slots that do
+        not exist yet, and return them keyed by Klipper object name."""
+        objects = {}
+        for index in range(len(self.lanes), slot_count):
+            lane = AFCLane(self.state, f"E{index}", index, "extruder")
+            self.lanes[lane.name] = lane
+            objects[f"AFC_lane {lane.name}"] = lane
+        unit_count = -(-slot_count // SLOTS_PER_UNIT)
+        for name in unit_names(1) + unit_names(max(unit_count, 2)):
+            if name not in self.units:
+                unit = AFCUnit(self.state, name, self.lanes)
+                self.units[name] = unit
+                objects[f"AFC_unit {name}"] = unit
+        return objects
+
+    def _ensure_slots(self, slot_count):
+        """Register lanes for IFS Jacker channels beyond the preregistered ones.
+        The UI picks them up the next time it loads the printer's objects."""
+        if slot_count <= len(self.lanes):
+            return
+        for name, obj in self._new_objects(slot_count).items():
+            if self.printer.lookup_object(name, None) is not None:
+                LOGGER.error(
+                    "Zmod AFC Lite: Klipper object %r already exists; "
+                    "not registering it for IFS slot growth", name
+                )
+                continue
+            self.printer.add_object(name, obj)
+        LOGGER.info("Zmod AFC Lite: registered lanes for %d IFS slots", slot_count)
 
     def get_status(self, eventtime=None):
-        current_slot = None
-        if self.lanes:
-            zmod_color = self.printer.lookup_object("zmod_color")
-            current_slot, _ = _zmod_toolhead_state(zmod_color, eventtime)
+        state = self.state.get(eventtime)
+        lanes = [
+            lane.name for lane in self.lanes.values()
+            if lane.zmod_slot <= state["slot_count"]
+        ]
 
         current_lane = None
-        for lane in self.lanes.values():
-            if lane.zmod_slot == current_slot:
-                current_lane = lane.name
-                break
+        if 1 <= state["current_slot"] <= state["slot_count"]:
+            current_lane = f"E{state['current_slot'] - 1}"
 
         return {
             "current_load": None,
@@ -98,8 +223,8 @@ class AFC:
             "position_saved": False,
             # Mainsail/Fluidd expect "<type> <name>" and look the unit up as
             # the "AFC_<type> <name>" object, i.e. "AFC_unit IFS".
-            "units": [f"unit {name}" for name in self.units],
-            "lanes": list(self.lanes),
+            "units": [f"unit {name}" for name in unit_names(state["unit_count"])],
+            "lanes": lanes,
             # No AFC_extruder object exists, so list none (as AFC-Lite does)
             # instead of making the UI draw an empty toolhead card.
             "extruders": [],
@@ -111,115 +236,45 @@ class AFC:
 
 
 class AFCLane:
-    def __init__(
-        self, printer, name, lane_index, zmod_slot, unit_name, extruder_name
-    ):
-        self.printer = printer
+    def __init__(self, state, name, lane_index, extruder_name):
+        self.state = state
         self.name = name
-        self.unit_name = unit_name
         self.lane_index = lane_index
-        self.zmod_slot = zmod_slot
+        self.zmod_slot = lane_index + 1
         self.extruder_name = extruder_name
 
-    def _handle_ready(self):
-        self.zmod_color = self.printer.lookup_object("zmod_color")
-        self.zmod_ifs = self.printer.lookup_object("zmod_ifs")
-
-        required_methods = (
-            (self.zmod_color, "get_printer_data_detail"),
-            (self.zmod_color, "get_status"),
-            (self.zmod_color, "cmd_IN_ZCOLOR"),
-            (self.zmod_color, "cmd_CHANGE_ZCOLOR"),
-            (self.zmod_ifs, "get_port"),
-        )
-        for backend, method in required_methods:
-            if not callable(getattr(backend, method, None)):
-                raise RuntimeError(
-                    "Zmod AFC Lite requires Zmod AD5X method "
-                    f"{backend.__class__.__name__}.{method}"
-                )
-
-    def _read_slot(self):
-        result, payload = self.zmod_color.get_printer_data_detail()
-        if result != 200:
-            raise RuntimeError(
-                f"Zmod could not read IFS spool metadata: {payload}"
-            )
-        if not isinstance(payload, dict):
-            raise RuntimeError("Zmod returned invalid IFS spool metadata")
-
-        detail = payload.get("detail", {})
-        slot_infos = detail.get("matlStationInfo", {}).get("slotInfos", [])
-        for slot in slot_infos:
-            if str(slot.get("slotId")) == str(self.zmod_slot):
-                return slot
-        raise RuntimeError(
-            f"Zmod did not return metadata for IFS slot {self.zmod_slot}"
-        )
-
-    def _mapped_tool(self):
-        try:
-            with open(FILE_CONFIG, "r", encoding="utf-8") as config_file:
-                mapping = json.load(config_file)
-        except FileNotFoundError:
-            return "NONE"
-        except (OSError, json.JSONDecodeError) as exc:
-            LOGGER.error("Unable to read Zmod tool-to-slot mapping: %s", exc)
-            return "NONE"
-
-        if not isinstance(mapping, list):
-            LOGGER.error("Zmod tool-to-slot mapping is not a list")
-            return "NONE"
-
-        for tool_index, slot in enumerate(mapping):
-            try:
-                if int(slot) == self.zmod_slot:
-                    return f"T{tool_index}"
-            except (TypeError, ValueError):
-                LOGGER.error(
-                    "Invalid slot value in Zmod tool-to-slot mapping: %r", slot
-                )
-                return "NONE"
-        return "NONE"
+    def unit_name(self, unit_count):
+        return unit_names(unit_count)[
+            min(self.lane_index // SLOTS_PER_UNIT, unit_count - 1)
+        ]
 
     def get_status(self, eventtime=None):
-        slot = self._read_slot()
-        loaded = bool(self.zmod_ifs.get_port(self.zmod_slot))
-        current_slot, extruder_sensor = _zmod_toolhead_state(
-            self.zmod_color, eventtime
+        state = self.state.get(eventtime)
+        active = self.zmod_slot <= state["slot_count"]
+        slot = state["slots"].get(self.zmod_slot, {}) if active else {}
+
+        loaded = bool(slot.get("hasFilament"))
+        tool_loaded = (
+            active
+            and state["current_slot"] == self.zmod_slot
+            and state["extruder_sensor"]
         )
-        tool_loaded = current_slot == self.zmod_slot and extruder_sensor
-        color = str(slot.get("materialColor", "#161616"))
-        if not color.startswith("#"):
-            color = f"#{color}"
-        rgb = color[1:7].upper()
-        if len(rgb) != 6:
-            raise RuntimeError(
-                f"Zmod returned invalid color metadata for IFS slot {self.zmod_slot}"
-            )
-        try:
-            int(rgb, 16)
-        except ValueError as exc:
-            raise RuntimeError(
-                f"Zmod returned invalid color metadata for IFS slot {self.zmod_slot}"
-            ) from exc
-        color = f"#{rgb}"
-        material = str(slot.get("materialName", "NONE")).upper()
+        material = str(slot.get("Material", "NONE")).upper()
 
         status = {
             "name": self.name,
-            "unit": self.unit_name,
+            "unit": self.unit_name(state["unit_count"]),
             "lane": self.lane_index,
             "zmod_slot": self.zmod_slot,
             "extruder": self.extruder_name,
-            "map": self._mapped_tool(),
+            "map": state["mapping"].get(self.zmod_slot, "NONE"),
             "load": loaded,
             "prep": loaded,
             "tool_loaded": tool_loaded,
             "loaded_to_hub": False,
             "material": material,
             "spool_id": None,
-            "color": color,
+            "color": self.state.color(self.zmod_slot, slot) if active else "#FFFFFF",
             # weight intentionally omitted; Zmod doesn't track it and the UI
             # hides it when absent.
             "runout_lane": "NONE",
@@ -233,21 +288,20 @@ class AFCLane:
 
 
 class AFCUnit:
-    def __init__(self, printer, name, lanes):
-        self.printer = printer
+    def __init__(self, state, name, lanes):
+        self.state = state
         self.name = name
         self.lanes = lanes
 
-    def _handle_ready(self):
-        self.lanes = {
-            lane.name: lane
-            for lane in self.lanes.values()
-            if lane.unit_name == self.name
-        }
-
     def get_status(self, eventtime=None):
+        state = self.state.get(eventtime)
+        lanes = [
+            lane.name for lane in self.lanes.values()
+            if lane.zmod_slot <= state["slot_count"]
+            and lane.unit_name(state["unit_count"]) == self.name
+        ]
         return {
-            "lanes": list(self.lanes),
+            "lanes": lanes,
             "extruders": [],
             "hubs": [],
             "buffers": [],

@@ -17,6 +17,11 @@ provide filament presence, current slot, color, and material information.
 - Load/unload through Zmod's native `IN_ZCOLOR` command.
 - Color/material updates through Zmod's native `CHANGE_ZCOLOR` command.
 - Current logical tool display from Zmod's per-print `file.json` mapping.
+- Chained IFS units through the [IFS Jacker plugin](https://github.com/ninjamida/ifs_jacker_plugin):
+  while it is loaded, every channel it detects becomes a lane, grouped four per
+  unit (`IFS_1`, `IFS_2`, ...). Without it, the plugin shows the single `IFS`
+  unit with four lanes. Up to 16 lanes update live; channels beyond that appear
+  after reloading the web UI.
 
 ## Not supported
 
