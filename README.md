@@ -1,10 +1,9 @@
 # Zmod AFC Lite
 
 An independent AFC-compatible status and control adapter for **Zmod on
-Flashforge AD5X with its four-slot IFS**. It is not a port for the Snapmaker U1
-firmware.
+Flashforge AD5X with its four-slot IFS**.
 
-The status shape follows the [AFC-Lite stub contract](https://snapmakeru1-extended-firmware.pages.dev/afc-lite);
+The status shape follows the U1 [AFC-Lite stub](https://snapmakeru1-extended-firmware.pages.dev/afc-lite);
 the hardware and metadata calls are adapted to [Zmod AD5X](https://github.com/ghzserg/z_ad5x).
 
 The plugin presents Zmod IFS slots 1-4 as AFC lanes E0-E3. All lanes use the
