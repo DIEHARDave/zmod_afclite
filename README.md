@@ -72,15 +72,28 @@ default_weight: 1000                    # grams shown for lanes without a weight
 ## Material selection
 
 The filament dialog's material field in Mainsail and Fluidd is a free-text
-box; the plugin cannot turn it into a dropdown. Instead, `SET_MATERIAL` checks
-what you typed against the printer's own material list (`valid_types`
-reported by Zmod: the built-in types plus any custom `filament_<NAME>`
-entries in `[zmod_ifs]`, without the ones in `hide_filament_types`):
+box; the plugin cannot turn it into a dropdown. Instead it shows a material
+picker: a prompt with one button per material in the printer's own list
+(`valid_types` reported by Zmod: the built-in types plus any custom
+`filament_<NAME>` entries in `[zmod_ifs]`, without the ones in
+`hide_filament_types`).
 
-- an exact name, in any case (`petg`), is applied directly;
-- part of a name (`pet`, `cf`) opens a prompt with buttons for the matching
-  materials;
-- anything else (a typo, or `?`) opens the prompt with every material.
+- Pick a color and press **Set Spool** without touching the material box: the
+  color is applied and the picker opens. Choose a material, or **Keep** the
+  current one.
+- Type an exact name, in any case (`petg`): it is applied directly and the
+  picker closes.
+- Type part of a name (`pet`, `cf`): the picker shows only the matching
+  materials.
+- Type anything else (a typo): the picker shows every material.
+
+To stop the picker opening after every color change, add this to
+`mod_data/user.cfg`:
+
+```ini
+[gcode_macro SET_COLOR]
+variable_material_prompt: False
+```
 
 ## Filament weight
 
