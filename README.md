@@ -29,7 +29,16 @@ the material and color need picking:
 
 ![Filament dialog for lane E1 with material, weight and color](docs/images/filament-dialog.png)
 
-With Spoolman, lanes show the spool's details instead; see [Spoolman](#spoolman).
+With [Spoolman](#spoolman), hovering over a lane's spool shows that spool's
+details from Spoolman, and the spool in the active lane is Moonraker's active
+spool:
+
+![AFC panel with a Spoolman spool on lane E1 and its details tooltip](docs/images/afc-panel-spoolman.png)
+
+Clicking a spool then opens the Spoolman spool picker instead of the filament
+dialog:
+
+![Change Spool dialog listing Spoolman spools, with spool 2 loaded in E1](docs/images/spoolman-change-spool.png)
 
 ## Supported
 
@@ -115,11 +124,6 @@ Spoolman: vendor, filament name, temperatures, remaining and used weight, and
 a link to the spool. Assigning a spool also writes its color and material into
 the Zmod slot, so the printer screen, HelixScreen and OrcaSlicer match.
 
-Lane E1 with a Spoolman spool. Hovering over the spool shows its details, and
-the spool is also Moonraker's active spool:
-
-![AFC panel with a Spoolman spool on lane E1 and its details tooltip](docs/images/afc-panel-spoolman.png)
-
 Setup: point Moonraker at Spoolman in `mod_data/user.moonraker.conf`, then
 restart Moonraker:
 
@@ -130,9 +134,7 @@ sync_rate: 5
 ```
 
 Clicking a lane's spool in the AFC panel then opens the Spoolman spool picker
-instead of the filament dialog:
-
-![Change Spool dialog listing Spoolman spools, with spool 2 loaded in E1](docs/images/spoolman-change-spool.png)
+instead of the filament dialog (see [Screenshots](#screenshots)).
 
 Assigning spools from other tools (NFC readers, phone apps, scripts) uses the
 same command, sent through Moonraker's `/printer/gcode/script` endpoint:
