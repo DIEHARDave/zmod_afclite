@@ -129,10 +129,10 @@ server: http://192.168.1.100:7912
 sync_rate: 5
 ```
 
-Clicking a lane's spool in the AFC panel then opens Mainsail's Spoolman spool
-picker instead of the filament dialog:
+Clicking a lane's spool in the AFC panel then opens the Spoolman spool picker
+instead of the filament dialog:
 
-![Mainsail's Change Spool dialog listing Spoolman spools, with spool 2 loaded in E1](docs/images/spoolman-change-spool.png)
+![Change Spool dialog listing Spoolman spools, with spool 2 loaded in E1](docs/images/spoolman-change-spool.png)
 
 Assigning spools from other tools (NFC readers, phone apps, scripts) uses the
 same command, sent through Moonraker's `/printer/gcode/script` endpoint:

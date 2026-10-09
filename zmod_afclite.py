@@ -654,8 +654,8 @@ class AFC:
     def __init__(self, config):
         self.printer = config.get_printer()
         self.state = ZmodState(self.printer, self._ensure_slots)
-        # Mainsail's filament dialog keeps "Set" disabled until the lane has a
-        # weight, so report one by default; 0 hides weights again.
+        # The Mainsail and Fluidd filament dialogs keep "Set" disabled until the
+        # lane has a weight, so report one by default; 0 hides weights again.
         self.state.default_weight = config.getfloat("default_weight", 1000., minval=0.)
         self.lanes = {}
         self.units = {}
