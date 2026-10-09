@@ -42,6 +42,7 @@ the material and color need picking:
   after reloading Mainsail or Fluidd.
 - OrcaSlicer filament sync: slot colors and materials are mirrored into
   Moonraker's `lane_data` namespace (see below).
+- Spoolman spools per lane, assignable by spool ID or NFC tag UID (see below).
 
 ## OrcaSlicer lane data
 
@@ -66,6 +67,7 @@ Options in the `[zmod_afclite]` section:
 lane_data: True                         # set False to disable the sync
 moonraker_url: http://127.0.0.1:7125    # Moonraker as seen from Klipper
 default_weight: 1000                    # grams shown for lanes without a weight
+spoolman_clear_on_empty: True           # forget a lane's spool when it is emptied
 ```
 
 ## Material selection
@@ -103,9 +105,55 @@ will not apply a color or material until the lane has a weight, so every lane re
 `zmod_afclite_weight_<lane>` and survives reboots. Set `default_weight: 0` to
 hide weights, at the cost of entering one each time you pick a filament.
 
+## Spoolman
+
+With [Spoolman](https://github.com/Donkie/Spoolman), each lane can be tied
+to a spool. Mainsail and Fluidd then show that spool's full details from
+Spoolman: vendor, filament name, temperatures, remaining and used weight, and
+a link to the spool. Assigning a spool also writes its color and material into
+the Zmod slot, so the printer screen, HelixScreen and OrcaSlicer match.
+
+Setup: point Moonraker at Spoolman in `mod_data/user.moonraker.conf`, then
+restart Moonraker:
+
+```ini
+[spoolman]
+server: http://192.168.1.100:7912
+sync_rate: 5
+```
+
+Clicking a lane's spool in the AFC panel then opens Mainsail's Spoolman spool
+picker instead of the filament dialog.
+
+Assigning spools from other tools (NFC readers, phone apps, scripts) uses the
+same command, sent through Moonraker's `/printer/gcode/script` endpoint:
+
+```gcode
+SET_SPOOL_ID LANE=E1 SPOOL_ID=5                  ; by Spoolman spool ID
+SET_SPOOL_ID LANE=E1 CARD_UID=04A1B2C3D4E5F6     ; by NFC tag UID
+SET_SPOOL_ID LANE=E1 SPOOL_ID=5 CARD_UID=04A1B2C3D4E5F6  ; pair tag with spool
+SET_SPOOL_ID LANE=E1 SPOOL_ID=0                  ; clear
+```
+
+Tag UIDs are kept in the spool's `card_uids` custom field (uppercase hex, comma
+separated), the convention used by the Snapmaker U1 SpoolLink apps such as
+SpoolPainter, SpoolKid and SpoolTagger, so tags paired there work here too.
+Pairing creates the field if it is missing and moves the UID off any other
+spool.
+
+- The assignment is saved per lane in `save_variables` as
+  `zmod_afclite_spool_<lane>`.
+- The spool in the active slot is reported to Moonraker as the active spool,
+  so Spoolman deducts the filament used while printing.
+- Spoolman materials Zmod does not know fall back as in SpoolSync (ASA to ABS,
+  PLA blends and COPE to PLA); otherwise the slot keeps its material.
+- When a lane's filament is pulled out of the IFS, its spool assignment is
+  cleared, as AFC does on eject. Set `spoolman_clear_on_empty: False` in
+  `[zmod_afclite]` to keep assignments.
+
 ## Not supported
 
-- AFC hubs, buffers, runout routing, Spoolman, vendor, spool ID, and weight.
+- AFC hubs, buffers, and runout routing.
 - AFC's global lane-to-tool mapping. Zmod selects mappings per print through
   its own `COLOR` workflow; `SET_MAP` reports an explicit error rather than
   changing a different mapping.
