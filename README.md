@@ -1,14 +1,22 @@
 # Zmod AFC Lite
 
-An independent AFC-compatible status and control adapter for **Zmod on
-Flashforge AD5X with its four-slot IFS**.
+An independent AFC-compatible status and control adapter for **Zmod on the
+Flashforge AD5X with its four-slot IFS, and on the Flashforge Creator 5 with
+its four toolheads**.
 
 The status shape follows the U1 [AFC-Lite stub](https://snapmakeru1-extended-firmware.pages.dev/afc-lite);
-the hardware and metadata calls are adapted to [Zmod AD5X](https://github.com/ghzserg/z_ad5x).
+the hardware and metadata calls are adapted to [Zmod](https://github.com/ghzserg/z_ad5x).
+The plugin detects the model by whether Zmod has an IFS (`zmod_ifs`).
 
-The plugin presents Zmod IFS slots 1-4 as AFC lanes E0-E3. All lanes use the
-AD5X's single Klipper `extruder`; Zmod's `zmod_color` and `zmod_ifs` objects
-provide filament presence, current slot, color, and material information.
+- **AD5X:** IFS slots 1-4 become AFC lanes E0-E3 in unit `IFS`. All lanes feed
+  the single Klipper `extruder`; the current lane is the slot loaded in the
+  head.
+- **Creator 5:** toolheads T0-T3 become AFC lanes E0-E3 in unit `C5`, each
+  with its own extruder (`extruder`, `extruder1`, ...), like the Snapmaker U1.
+  The current lane is the toolhead on the carriage.
+
+Zmod's `zmod_color` object provides filament presence, the current slot or
+toolhead, color, and material information.
 
 ## Screenshots
 
@@ -42,15 +50,22 @@ dialog:
 
 ## Supported
 
-- AFC-style status for the four Zmod IFS slots.
-- Load/unload through Zmod's native `IN_ZCOLOR` command.
+- AFC-style status for the four Zmod IFS slots or Creator 5 toolheads.
+- Load/unload through Zmod's native `IN_ZCOLOR` (AD5X) or `_T_IN_ZCOLOR`
+  (Creator 5) command.
 - Color/material updates through Zmod's native `CHANGE_ZCOLOR` command.
 - Current logical tool display from Zmod's per-print `file.json` mapping.
 - Chained IFS units through the [IFS Jacker plugin](https://github.com/ninjamida/ifs_jacker_plugin):
   while it is loaded, every channel it detects becomes a lane, grouped four per
   unit (`IFS_1`, `IFS_2`, ...). Without it, the plugin shows the single `IFS`
-  unit with four lanes. Up to 16 lanes update live; channels beyond that appear
-  after reloading Mainsail or Fluidd.
+  unit with four lanes. Only lanes for connected IFS units are registered, so
+  Mainsail, Fluidd and HelixScreen show just those. The IFS Jacker reports its
+  channels about 30 s after Klipper starts; the plugin saves that count
+  (`zmod_afclite_slot_count` in `save_variables`) and registers that many lanes
+  at the next start. After adding an IFS unit, its lanes appear in Mainsail
+  and Fluidd once the page is reloaded. After removing one, its lanes
+  disappear from Mainsail and Fluidd right away. HelixScreen picks up either
+  change after the next `FIRMWARE_RESTART`.
 - OrcaSlicer filament sync: slot colors and materials are mirrored into
   Moonraker's `lane_data` namespace (see below).
 - Spoolman spools per lane, assignable by spool ID or NFC tag UID (see below).
@@ -168,7 +183,8 @@ spool.
 - AFC's global lane-to-tool mapping. Zmod selects mappings per print through
   its own `COLOR` workflow; `SET_MAP` reports an explicit error rather than
   changing a different mapping.
-- Running on Zmod models other than AD5X, or on stock Snapmaker U1 firmware.
+- Running on Zmod models other than the AD5X and Creator 5, or on stock
+  Snapmaker U1 firmware.
 
 ## Install
 
@@ -229,5 +245,5 @@ related names); do not enable another AFC implementation at the same time.
 After Klipper restarts, check that the AFC panel in Mainsail or Fluidd shows
 lanes E0-E3. Try a
 non-destructive status query before using the load/unload controls. The
-adapter requires the Zmod AD5X Klipper objects `zmod_color`, `zmod_ifs`,
-`IN_ZCOLOR`, and `CHANGE_ZCOLOR`.
+adapter requires Zmod's `zmod_color` object and `CHANGE_ZCOLOR` command, plus
+`zmod_ifs` and `IN_ZCOLOR` on the AD5X or `_T_IN_ZCOLOR` on the Creator 5.

@@ -45,13 +45,18 @@ CARD_UIDS_FIELD_DEFINITION = {
 # Zmod's slot count (color_limit) is 4 for a single IFS, and grows to the IFS
 # Jacker's detected channel count when it chains several IFS units together.
 # Lanes beyond the first IFS are only shown while the IFS Jacker plugin is
-# loaded. The UI only subscribes to objects that exist when it connects, so
-# lanes for up to four IFS units are registered up front and listed only while
-# Zmod reports the slot; any further lanes are registered as they are detected
-# and appear after the UI reconnects.
-PREREGISTERED_SLOTS = 16
+# loaded. Clients such as HelixScreen draw one slot per AFC_lane object, and
+# Klipper objects cannot be removed, so only the lanes that exist are
+# registered. The IFS Jacker reports its channels about 30 s after startup, so
+# the last detected count is saved and used to register lanes at the next
+# start; lanes detected later are registered then and appear once the client
+# reconnects.
+SLOT_COUNT_VARIABLE = "zmod_afclite_slot_count"
 SLOTS_PER_UNIT = 4
 UNIT_NAME = "IFS"
+# On the Creator 5 the four lanes are its four toolheads, each with its own
+# extruder, as on the Snapmaker U1, whose AFC-Lite unit is named "U1".
+TOOLCHANGER_UNIT_NAME = "C5"
 
 
 def moonraker_request(url, method, query=None, body=None, timeout=5):
@@ -83,8 +88,13 @@ class ZmodState:
         self.printer = printer
         self.on_slot_count = on_slot_count
         self.zmod_color = None
-        self.ifs_jacker = False
+        # True on Zmod models with one extruder per lane (Creator 5); False on
+        # models that feed one extruder from an IFS (AD5X).
+        self.toolchanger = False
+        self.unit_name = UNIT_NAME
+        self.ifs_jacker = None
         self.save_variables = None
+        self.registered_units = 1
         self.default_weight = 0.
         self._eventtime = None
         self._snapshot = None
@@ -92,19 +102,54 @@ class ZmodState:
         self._mapping = {}
         self._bad_colors = set()
 
-    def handle_ready(self):
-        self.zmod_color = self.printer.lookup_object("zmod_color")
-        for method in ("get_status", "cmd_IN_ZCOLOR", "cmd_CHANGE_ZCOLOR"):
-            if not callable(getattr(self.zmod_color, method, None)):
-                raise RuntimeError(
-                    "Zmod AFC Lite requires Zmod AD5X method "
-                    f"{self.zmod_color.__class__.__name__}.{method}"
-                )
+    def handle_connect(self):
+        self.toolchanger = self.printer.lookup_object("zmod_ifs", None) is None
+        self.unit_name = TOOLCHANGER_UNIT_NAME if self.toolchanger else UNIT_NAME
         # Only the IFS Jacker plugin chains extra IFS units; without it, a
         # color_limit above 4 does not mean more physical slots.
-        self.ifs_jacker = self.printer.lookup_object("ifs_jacker", None) is not None
-        # Lane weights and spool IDs are kept in Zmod's save_variables.
+        self.ifs_jacker = self.printer.lookup_object("ifs_jacker", None)
+        # Lane weights, spool IDs and the slot count are kept in Zmod's
+        # save_variables.
         self.save_variables = self.printer.lookup_object("save_variables", None)
+
+    def jacker_detected(self):
+        """True once the IFS Jacker has reported its channel count."""
+        return getattr(self.ifs_jacker, "ifs_jacker_present", None) is True
+
+    def saved_variable(self, name):
+        return (getattr(self.save_variables, "allVariables", None) or {}).get(name)
+
+    def handle_ready(self):
+        self.zmod_color = self.printer.lookup_object("zmod_color")
+        load = "cmd_T_IN_ZCOLOR" if self.toolchanger else "cmd_IN_ZCOLOR"
+        for method in ("get_status", load, "cmd_CHANGE_ZCOLOR"):
+            if not callable(getattr(self.zmod_color, method, None)):
+                raise RuntimeError(
+                    "Zmod AFC Lite requires Zmod method "
+                    f"{self.zmod_color.__class__.__name__}.{method}"
+                )
+
+    def zmod_color_hex(self, color):
+        """The color Zmod will store for a 6-digit RGB hex. The Creator 5 keeps
+        only an index into its palette and saves any other color as index 0
+        (white), so colors are snapped to the nearest palette entry; the AD5X
+        reports no palette and stores any color."""
+        status = self.zmod_color.get_status(self.printer.get_reactor().monotonic())
+        palette = []
+        for entry in status.get("palette") or []:
+            entry = str(entry).replace("#", "").upper()
+            if len(entry) == 6:
+                palette.append(entry)
+        if not palette or color in palette:
+            return color
+        return nearest_palette_color(color, palette)
+
+    def extruder_name(self, lane_index):
+        """Klipper extruder a lane feeds: the single "extruder" behind an IFS,
+        or the lane's own toolhead extruder on a toolchanger."""
+        if self.toolchanger and lane_index > 0:
+            return f"extruder{lane_index}"
+        return "extruder"
 
     def get(self, eventtime):
         if self.zmod_color is None:
@@ -136,7 +181,7 @@ class ZmodState:
         # get_current_channel(), which re-reads the config file on every call.
         status = self.zmod_color.get_status(eventtime)
         slot_count = max(1, int(status.get("color_limit", SLOTS_PER_UNIT)))
-        if not self.ifs_jacker:
+        if self.ifs_jacker is None:
             slot_count = min(slot_count, SLOTS_PER_UNIT)
         self.on_slot_count(slot_count)
         slots = {}
@@ -145,11 +190,20 @@ class ZmodState:
                 slots[int(slot.get("ID"))] = slot
             except (TypeError, ValueError):
                 continue
+        if self.toolchanger:
+            # active_tool_id is the toolhead on the carriage (0-3), -1 with
+            # all of them parked, -2 while the dock sensors disagree. Its
+            # extruder is fed while that toolhead's own sensor sees filament.
+            current_slot = max(int(status.get("active_tool_id", -1)), -1) + 1
+            extruder_sensor = bool(slots.get(current_slot, {}).get("hasFilament"))
+        else:
+            current_slot = int(status.get("channel", 0))
+            extruder_sensor = bool(status.get("extruder_sensor"))
         return {
             "slot_count": slot_count,
             "unit_count": -(-slot_count // SLOTS_PER_UNIT),
-            "current_slot": int(status.get("channel", 0)),
-            "extruder_sensor": bool(status.get("extruder_sensor")),
+            "current_slot": current_slot,
+            "extruder_sensor": extruder_sensor,
             "slots": slots,
             "mapping": self._read_mapping(),
             "variables": dict(getattr(self.save_variables, "allVariables", None) or {}),
@@ -350,6 +404,21 @@ def resolve_material(material, valid_types):
     return fallback if fallback in valid else None
 
 
+def nearest_palette_color(color, palette):
+    """Closest palette entry to a 6-digit RGB hex, by the "redmean" weighted
+    RGB distance, which tracks perceived difference better than plain RGB."""
+    def rgb(value):
+        return [int(value[i:i + 2], 16) for i in (0, 2, 4)]
+
+    def distance(entry):
+        (r1, g1, b1), (r2, g2, b2) = rgb(color), rgb(entry)
+        mean = (r1 + r2) / 2
+        return ((2 + mean / 256) * (r1 - r2) ** 2 + 4 * (g1 - g2) ** 2
+                + (2 + (255 - mean) / 256) * (b1 - b2) ** 2)
+
+    return min(palette, key=distance)
+
+
 def spoolman_color(filament):
     """First 6-digit RGB color of a Spoolman filament, or None."""
     colors = [filament.get("color_hex") or ""]
@@ -544,7 +613,7 @@ class SpoolmanLink:
         if color is None:
             color = status["color"].replace("#", "")
         self.gcode.run_script_from_command(
-            f"CHANGE_ZCOLOR SLOT={lane.zmod_slot} HEX={color} TYPE={material} SILENT=1"
+            f"_AFC_SET_ZCOLOR SLOT={lane.zmod_slot} HEX={color} TYPE={material}"
         )
 
     def cmd_SET_SPOOL_ID(self, gcmd):
@@ -642,12 +711,19 @@ class SpoolmanLink:
                 )
 
 
-def unit_names(unit_count):
+def unit_names(unit_count, base=UNIT_NAME):
     """A single IFS keeps the plain "IFS" unit; chained IFS units (IFS Jacker)
     become "IFS_1", "IFS_2", ... with four lanes each."""
     if unit_count <= 1:
-        return [UNIT_NAME]
-    return [f"{UNIT_NAME}_{index + 1}" for index in range(unit_count)]
+        return [base]
+    return [f"{base}_{index + 1}" for index in range(unit_count)]
+
+
+def lane_unit_name(state, lane_index):
+    """Unit of a lane. Names follow the registered units, so a start with the
+    saved IFS Jacker count keeps "IFS_1" while Zmod still reports 4 slots."""
+    names = unit_names(state.registered_units, state.unit_name)
+    return names[min(lane_index // SLOTS_PER_UNIT, len(names) - 1)]
 
 
 class AFC:
@@ -659,16 +735,22 @@ class AFC:
         self.state.default_weight = config.getfloat("default_weight", 1000., minval=0.)
         self.lanes = {}
         self.units = {}
+        self._saved_slot_count = None
 
-        objects = {"AFC": self, **self._new_objects(PREREGISTERED_SLOTS)}
-        for name in objects:
-            if self.printer.lookup_object(name, None) is not None:
-                raise config.error(
-                    f"Cannot enable Zmod AFC Lite: Klipper object {name!r} "
-                    "already exists. Disable the conflicting AFC integration."
-                )
-        for name, obj in objects.items():
-            self.printer.add_object(name, obj)
+        # Lanes and units are registered at klippy:connect, once the saved
+        # slot count and the IFS Jacker are known; clients list Klipper's
+        # objects only after it is ready.
+        if self.printer.lookup_object("AFC", None) is not None:
+            raise config.error(
+                "Cannot enable Zmod AFC Lite: Klipper object 'AFC' already "
+                "exists. Disable the conflicting AFC integration."
+            )
+        self.printer.add_object("AFC", self)
+        self.gcode = self.printer.lookup_object("gcode")
+        self.gcode.register_command(
+            "_AFC_SET_ZCOLOR", self.cmd_AFC_SET_ZCOLOR,
+            desc="Set a Zmod slot's color and material without Zmod's picker",
+        )
 
         moonraker_url = config.get("moonraker_url", "http://127.0.0.1:7125")
         self.lane_data = None
@@ -679,21 +761,67 @@ class AFC:
             clear_on_empty=config.getboolean("spoolman_clear_on_empty", True),
         )
 
+        self.printer.register_event_handler("klippy:connect", self._handle_connect)
         self.printer.register_event_handler("klippy:ready", self._handle_ready)
+
+    def _handle_connect(self):
+        self.state.handle_connect()
+        slot_count = SLOTS_PER_UNIT
+        if self.state.ifs_jacker is not None:
+            try:
+                self._saved_slot_count = max(
+                    1, int(self.state.saved_variable(SLOT_COUNT_VARIABLE))
+                )
+                slot_count = self._saved_slot_count
+            except (TypeError, ValueError):
+                pass
+            zmod_ifs = self.printer.lookup_object("zmod_ifs", None)
+            slot_count = max(slot_count, int(getattr(zmod_ifs, "color_limit", 0) or 0))
+        for name, obj in self._new_objects(slot_count).items():
+            if self.printer.lookup_object(name, None) is not None:
+                raise self.printer.config_error(
+                    f"Cannot enable Zmod AFC Lite: Klipper object {name!r} "
+                    "already exists. Disable the conflicting AFC integration."
+                )
+            self.printer.add_object(name, obj)
 
     def _handle_ready(self):
         self.state.handle_ready()
+
+    def cmd_AFC_SET_ZCOLOR(self, gcmd):
+        slot = gcmd.get_int("SLOT", minval=1)
+        color = gcmd.get("HEX").replace("#", "").strip().upper()[:6]
+        material = gcmd.get("TYPE")
+        try:
+            int(color, 16)
+        except ValueError:
+            color = ""
+        if len(color) != 6:
+            raise gcmd.error("HEX must be a 6-digit RGB color.")
+        zmod_color = self.state.zmod_color_hex(color)
+        if zmod_color != color:
+            gcmd.respond_info(
+                f"This printer stores colors from its own palette; #{color} is "
+                f"saved as the closest one, #{zmod_color}."
+            )
+        # SILENT=1 stops CHANGE_ZCOLOR from opening Zmod's color picker.
+        self.gcode.run_script_from_command(
+            f"CHANGE_ZCOLOR SLOT={slot} HEX={zmod_color} TYPE={material} SILENT=1"
+        )
 
     def _new_objects(self, slot_count):
         """Create the lane and unit objects needed for slot_count slots that do
         not exist yet, and return them keyed by Klipper object name."""
         objects = {}
         for index in range(len(self.lanes), slot_count):
-            lane = AFCLane(self.state, f"E{index}", index, "extruder")
+            lane = AFCLane(
+                self.state, f"E{index}", index, self.state.extruder_name(index)
+            )
             self.lanes[lane.name] = lane
             objects[f"AFC_lane {lane.name}"] = lane
         unit_count = -(-slot_count // SLOTS_PER_UNIT)
-        for name in unit_names(1) + unit_names(max(unit_count, 2)):
+        self.state.registered_units = max(self.state.registered_units, unit_count)
+        for name in unit_names(self.state.registered_units, self.state.unit_name):
             if name not in self.units:
                 unit = AFCUnit(self.state, name, self.lanes)
                 self.units[name] = unit
@@ -701,9 +829,16 @@ class AFC:
         return objects
 
     def _ensure_slots(self, slot_count):
-        """Register lanes for IFS Jacker channels beyond the preregistered ones.
-        The UI picks them up the next time it loads the printer's objects."""
-        if slot_count <= len(self.lanes):
+        """Save the IFS Jacker's detected slot count for the next start, and
+        register lanes for channels beyond the registered ones. Clients pick
+        them up the next time they load the printer's objects."""
+        if self.state.jacker_detected() and slot_count != self._saved_slot_count:
+            self._saved_slot_count = slot_count
+            self.printer.get_reactor().register_callback(
+                lambda e: self._save_slot_count(slot_count)
+            )
+        # Before klippy:connect no lanes exist yet; it registers them.
+        if not self.lanes or slot_count <= len(self.lanes):
             return
         for name, obj in self._new_objects(slot_count).items():
             if self.printer.lookup_object(name, None) is not None:
@@ -714,6 +849,16 @@ class AFC:
                 continue
             self.printer.add_object(name, obj)
         LOGGER.info("Zmod AFC Lite: registered lanes for %d IFS slots", slot_count)
+
+    def _save_slot_count(self, slot_count):
+        if self.state.save_variables is None:
+            return
+        try:
+            self.printer.lookup_object("gcode").run_script(
+                f"SAVE_VARIABLE VARIABLE={SLOT_COUNT_VARIABLE} VALUE={slot_count}"
+            )
+        except Exception:
+            LOGGER.exception("Zmod AFC Lite: unable to save the IFS slot count")
 
     def get_status(self, eventtime=None):
         state = self.state.get(eventtime)
@@ -742,7 +887,12 @@ class AFC:
             "position_saved": False,
             # Mainsail/Fluidd expect "<type> <name>" and look the unit up as
             # the "AFC_<type> <name>" object, i.e. "AFC_unit IFS".
-            "units": [f"unit {name}" for name in unit_names(state["unit_count"])],
+            "units": [
+                f"unit {name}"
+                for name in unit_names(
+                    self.state.registered_units, self.state.unit_name
+                )[:state["unit_count"]]
+            ],
             "lanes": lanes,
             # No AFC_extruder object exists, so list none (as AFC-Lite does)
             # instead of making the UI draw an empty toolhead card.
@@ -762,10 +912,8 @@ class AFCLane:
         self.zmod_slot = lane_index + 1
         self.extruder_name = extruder_name
 
-    def unit_name(self, unit_count):
-        return unit_names(unit_count)[
-            min(self.lane_index // SLOTS_PER_UNIT, unit_count - 1)
-        ]
+    def unit_name(self):
+        return lane_unit_name(self.state, self.lane_index)
 
     def get_status(self, eventtime=None):
         state = self.state.get(eventtime)
@@ -773,16 +921,20 @@ class AFCLane:
         slot = state["slots"].get(self.zmod_slot, {}) if active else {}
 
         loaded = bool(slot.get("hasFilament"))
-        tool_loaded = (
-            active
-            and state["current_slot"] == self.zmod_slot
-            and state["extruder_sensor"]
-        )
+        if self.state.toolchanger:
+            # Each lane feeds its own toolhead, as on the U1.
+            tool_loaded = loaded
+        else:
+            tool_loaded = (
+                active
+                and state["current_slot"] == self.zmod_slot
+                and state["extruder_sensor"]
+            )
         material = str(slot.get("Material", "NONE")).upper()
 
         status = {
             "name": self.name,
-            "unit": self.unit_name(state["unit_count"]),
+            "unit": self.unit_name(),
             "lane": self.lane_index,
             "zmod_slot": self.zmod_slot,
             "extruder": self.extruder_name,
@@ -836,7 +988,7 @@ class AFCUnit:
         lanes = [
             lane.name for lane in self.lanes.values()
             if lane.zmod_slot <= state["slot_count"]
-            and lane.unit_name(state["unit_count"]) == self.name
+            and lane.unit_name() == self.name
         ]
         return {
             "lanes": lanes,
