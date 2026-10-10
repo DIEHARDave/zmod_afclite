@@ -31,7 +31,7 @@ SPOOLMAN_REMOTE_METHOD = "spoolman_set_active_spool"
 # Moonraker can stall for 10-15 s right after boot while it scans files.
 SPOOLMAN_TIMEOUT = 30.0
 SPOOLMAN_POLL = 2.0
-# Zmod briefly reports IFS slots as empty while it starts up, so a lane must
+# Z-Mod briefly reports IFS slots as empty while it starts up, so a lane must
 # read empty this long before its spool assignment is cleared.
 SPOOLMAN_CLEAR_DELAY = 30.0
 CARD_UIDS_FIELD = "card_uids"
@@ -42,7 +42,7 @@ CARD_UIDS_FIELD_DEFINITION = {
     "default_value": json.dumps(""),
 }
 
-# Zmod's slot count (color_limit) is 4 for a single IFS, and grows to the IFS
+# Z-Mod's slot count (color_limit) is 4 for a single IFS, and grows to the IFS
 # Jacker's detected channel count when it chains several IFS units together.
 # Lanes beyond the first IFS are only shown while the IFS Jacker plugin is
 # loaded. Clients such as HelixScreen draw one slot per AFC_lane object, and
@@ -81,14 +81,14 @@ class AFCLaneState:
 
 
 class ZmodState:
-    """One parsed snapshot of Zmod's IFS status per Klipper status poll, shared
+    """One parsed snapshot of Z-Mod's IFS status per Klipper status poll, shared
     by the AFC, unit and lane objects so zmod_color is queried once per poll."""
 
     def __init__(self, printer, on_slot_count):
         self.printer = printer
         self.on_slot_count = on_slot_count
         self.zmod_color = None
-        # True on Zmod models with one extruder per lane (Creator 5); False on
+        # True on Z-Mod models with one extruder per lane (Creator 5); False on
         # models that feed one extruder from an IFS (AD5X).
         self.toolchanger = False
         self.unit_name = UNIT_NAME
@@ -108,7 +108,7 @@ class ZmodState:
         # Only the IFS Jacker plugin chains extra IFS units; without it, a
         # color_limit above 4 does not mean more physical slots.
         self.ifs_jacker = self.printer.lookup_object("ifs_jacker", None)
-        # Lane weights, spool IDs and the slot count are kept in Zmod's
+        # Lane weights, spool IDs and the slot count are kept in Z-Mod's
         # save_variables.
         self.save_variables = self.printer.lookup_object("save_variables", None)
 
@@ -125,12 +125,12 @@ class ZmodState:
         for method in ("get_status", load, "cmd_CHANGE_ZCOLOR"):
             if not callable(getattr(self.zmod_color, method, None)):
                 raise RuntimeError(
-                    "Zmod AFC Lite requires Zmod method "
+                    "Z-Mod AFC Lite requires Z-Mod method "
                     f"{self.zmod_color.__class__.__name__}.{method}"
                 )
 
     def zmod_color_hex(self, color):
-        """The color Zmod will store for a 6-digit RGB hex. The Creator 5 keeps
+        """The color Z-Mod will store for a 6-digit RGB hex. The Creator 5 keeps
         only an index into its palette and saves any other color as index 0
         (white), so colors are snapped to the nearest palette entry; the AD5X
         reports no palette and stores any color."""
@@ -210,7 +210,7 @@ class ZmodState:
         }
 
     def _read_mapping(self):
-        """Zmod's per-print tool-to-slot mapping as {slot: "T<n>"}, re-read
+        """Z-Mod's per-print tool-to-slot mapping as {slot: "T<n>"}, re-read
         only when file.json changes."""
         try:
             mtime = os.stat(FILE_CONFIG).st_mtime
@@ -227,11 +227,11 @@ class ZmodState:
             with open(FILE_CONFIG, "r", encoding="utf-8") as config_file:
                 mapping = json.load(config_file)
         except (OSError, json.JSONDecodeError) as exc:
-            LOGGER.error("Unable to read Zmod tool-to-slot mapping: %s", exc)
+            LOGGER.error("Unable to read Z-Mod tool-to-slot mapping: %s", exc)
             return self._mapping
 
         if not isinstance(mapping, list):
-            LOGGER.error("Zmod tool-to-slot mapping is not a list")
+            LOGGER.error("Z-Mod tool-to-slot mapping is not a list")
             return self._mapping
 
         for tool_index, slot in enumerate(mapping):
@@ -239,7 +239,7 @@ class ZmodState:
                 self._mapping.setdefault(int(slot), f"T{tool_index}")
             except (TypeError, ValueError):
                 LOGGER.error(
-                    "Invalid slot value in Zmod tool-to-slot mapping: %r", slot
+                    "Invalid slot value in Z-Mod tool-to-slot mapping: %r", slot
                 )
                 self._mapping = {}
                 break
@@ -256,17 +256,17 @@ class ZmodState:
         if zmod_slot not in self._bad_colors:
             self._bad_colors.add(zmod_slot)
             LOGGER.warning(
-                "Zmod returned invalid color %r for IFS slot %d", rgb, zmod_slot
+                "Z-Mod returned invalid color %r for IFS slot %d", rgb, zmod_slot
             )
         return "#FFFFFF"
 
 
 class LaneDataSync:
-    """Mirror Zmod's slot color/material into Moonraker's lane_data namespace.
+    """Mirror Z-Mod's slot color/material into Moonraker's lane_data namespace.
 
-    The reactor timer only takes a snapshot of Zmod's slots; HTTP runs on a
+    The reactor timer only takes a snapshot of Z-Mod's slots; HTTP runs on a
     worker thread so Klipper never blocks on Moonraker. After one reconcile at
-    startup, a lane is written only when Zmod's own data for it changes, so
+    startup, a lane is written only when Z-Mod's own data for it changes, so
     other writers (HelixScreen, SpoolSync) are never fought over."""
 
     def __init__(self, printer, state, url):
@@ -323,7 +323,7 @@ class LaneDataSync:
             if changed:
                 self._wake.set()
         except Exception:
-            LOGGER.exception("Zmod AFC Lite: unable to read slots for lane_data")
+            LOGGER.exception("Z-Mod AFC Lite: unable to read slots for lane_data")
         return eventtime + LANE_DATA_POLL
 
     def _run(self):
@@ -340,7 +340,7 @@ class LaneDataSync:
             try:
                 self._sync(desired, slot_count)
             except Exception as exc:
-                LOGGER.warning("Zmod AFC Lite: lane_data sync failed, retrying: %s", exc)
+                LOGGER.warning("Z-Mod AFC Lite: lane_data sync failed, retrying: %s", exc)
                 self._wake.wait(LANE_DATA_RETRY)
                 self._wake.set()
 
@@ -389,7 +389,7 @@ class LaneDataSync:
 
 
 def resolve_material(material, valid_types):
-    """Zmod material type for a Spoolman material: an exact match, else the
+    """Z-Mod material type for a Spoolman material: an exact match, else the
     same fallbacks SpoolSync uses (ASA -> ABS, COPE and PLA blends -> PLA)."""
     material = str(material or "").strip().upper()
     valid = [t for t in valid_types if t not in UNSET_MATERIALS]
@@ -461,7 +461,7 @@ class SpoolmanLink:
 
     SET_SPOOL_ID looks a spool up by ID or NFC card UID through Moonraker's
     [spoolman] proxy, saves its ID for the lane, and writes the spool's color
-    and material into the Zmod slot. Mainsail and Fluidd then show the spool's
+    and material into the Z-Mod slot. Mainsail and Fluidd then show the spool's
     details from Spoolman. The spool in the active slot is reported to
     Moonraker as the active spool, so Spoolman tracks the filament used."""
 
@@ -595,7 +595,7 @@ class SpoolmanLink:
         )
 
     def _apply(self, gcmd, lane, spool):
-        """Write the spool's color and material into the lane's Zmod slot."""
+        """Write the spool's color and material into the lane's Z-Mod slot."""
         filament = spool.get("filament") or {}
         eventtime = self.reactor.monotonic()
         status = lane.get_status(eventtime)
@@ -604,7 +604,7 @@ class SpoolmanLink:
         material = resolve_material(filament.get("material"), valid_types)
         if material is None:
             gcmd.respond_info(
-                f"Spoolman material {filament.get('material')!r} is not a Zmod "
+                f"Spoolman material {filament.get('material')!r} is not a Z-Mod "
                 f"material; {lane.name} keeps {status['material']}."
             )
             material = status["material"]
@@ -662,7 +662,7 @@ class SpoolmanLink:
         try:
             self._update(self.state.get(eventtime), eventtime)
         except Exception:
-            LOGGER.exception("Zmod AFC Lite: Spoolman active spool update failed")
+            LOGGER.exception("Z-Mod AFC Lite: Spoolman active spool update failed")
         return eventtime + SPOOLMAN_POLL
 
     def _update(self, snapshot, eventtime):
@@ -678,7 +678,7 @@ class SpoolmanLink:
         try:
             self.webhooks.call_remote_method(SPOOLMAN_REMOTE_METHOD, spool_id=active)
         except self.printer.command_error as exc:
-            LOGGER.info("Zmod AFC Lite: unable to set active spool: %s", exc)
+            LOGGER.info("Z-Mod AFC Lite: unable to set active spool: %s", exc)
             return
         self._active = active
 
@@ -703,7 +703,7 @@ class SpoolmanLink:
             self._empty_since.pop(zmod_slot, None)
             lane = self.lanes.get(f"E{zmod_slot - 1}")
             if lane is not None and lane.spool_id(snapshot):
-                LOGGER.info("Zmod AFC Lite: %s emptied, clearing its spool", lane.name)
+                LOGGER.info("Z-Mod AFC Lite: %s emptied, clearing its spool", lane.name)
                 self.reactor.register_callback(
                     lambda e, name=lane.name.lower(): self.gcode.run_script(
                         f"SAVE_VARIABLE VARIABLE={SPOOL_VARIABLE_PREFIX}{name} VALUE=0"
@@ -721,7 +721,7 @@ def unit_names(unit_count, base=UNIT_NAME):
 
 def lane_unit_name(state, lane_index):
     """Unit of a lane. Names follow the registered units, so a start with the
-    saved IFS Jacker count keeps "IFS_1" while Zmod still reports 4 slots."""
+    saved IFS Jacker count keeps "IFS_1" while Z-Mod still reports 4 slots."""
     names = unit_names(state.registered_units, state.unit_name)
     return names[min(lane_index // SLOTS_PER_UNIT, len(names) - 1)]
 
@@ -742,14 +742,14 @@ class AFC:
         # objects only after it is ready.
         if self.printer.lookup_object("AFC", None) is not None:
             raise config.error(
-                "Cannot enable Zmod AFC Lite: Klipper object 'AFC' already "
+                "Cannot enable Z-Mod AFC Lite: Klipper object 'AFC' already "
                 "exists. Disable the conflicting AFC integration."
             )
         self.printer.add_object("AFC", self)
         self.gcode = self.printer.lookup_object("gcode")
         self.gcode.register_command(
             "_AFC_SET_ZCOLOR", self.cmd_AFC_SET_ZCOLOR,
-            desc="Set a Zmod slot's color and material without Zmod's picker",
+            desc="Set a Z-Mod slot's color and material without Z-Mod's picker",
         )
 
         moonraker_url = config.get("moonraker_url", "http://127.0.0.1:7125")
@@ -780,7 +780,7 @@ class AFC:
         for name, obj in self._new_objects(slot_count).items():
             if self.printer.lookup_object(name, None) is not None:
                 raise self.printer.config_error(
-                    f"Cannot enable Zmod AFC Lite: Klipper object {name!r} "
+                    f"Cannot enable Z-Mod AFC Lite: Klipper object {name!r} "
                     "already exists. Disable the conflicting AFC integration."
                 )
             self.printer.add_object(name, obj)
@@ -804,7 +804,7 @@ class AFC:
                 f"This printer stores colors from its own palette; #{color} is "
                 f"saved as the closest one, #{zmod_color}."
             )
-        # SILENT=1 stops CHANGE_ZCOLOR from opening Zmod's color picker.
+        # SILENT=1 stops CHANGE_ZCOLOR from opening Z-Mod's color picker.
         self.gcode.run_script_from_command(
             f"CHANGE_ZCOLOR SLOT={slot} HEX={zmod_color} TYPE={material} SILENT=1"
         )
@@ -843,12 +843,12 @@ class AFC:
         for name, obj in self._new_objects(slot_count).items():
             if self.printer.lookup_object(name, None) is not None:
                 LOGGER.error(
-                    "Zmod AFC Lite: Klipper object %r already exists; "
+                    "Z-Mod AFC Lite: Klipper object %r already exists; "
                     "not registering it for IFS slot growth", name
                 )
                 continue
             self.printer.add_object(name, obj)
-        LOGGER.info("Zmod AFC Lite: registered lanes for %d IFS slots", slot_count)
+        LOGGER.info("Z-Mod AFC Lite: registered lanes for %d IFS slots", slot_count)
 
     def _save_slot_count(self, slot_count):
         if self.state.save_variables is None:
@@ -858,7 +858,7 @@ class AFC:
                 f"SAVE_VARIABLE VARIABLE={SLOT_COUNT_VARIABLE} VALUE={slot_count}"
             )
         except Exception:
-            LOGGER.exception("Zmod AFC Lite: unable to save the IFS slot count")
+            LOGGER.exception("Z-Mod AFC Lite: unable to save the IFS slot count")
 
     def get_status(self, eventtime=None):
         state = self.state.get(eventtime)
@@ -959,7 +959,7 @@ class AFCLane:
         return status
 
     def weight(self, state):
-        """Weight saved by SET_WEIGHT, else the configured default. Zmod does
+        """Weight saved by SET_WEIGHT, else the configured default. Z-Mod does
         not measure filament, so this is only what the user entered."""
         saved = state["variables"].get(f"{WEIGHT_VARIABLE_PREFIX}{self.name.lower()}")
         try:
