@@ -1,12 +1,12 @@
-# Zmod AFC Lite
+# Z-Mod AFC Lite
 
-An independent AFC-compatible status and control adapter for **Zmod on the
+An independent AFC-compatible status and control adapter for **Z-Mod on the
 Flashforge AD5X with its four-slot IFS, and on the Flashforge Creator 5 with
 its four toolheads**.
 
 The status shape follows the U1 [AFC-Lite stub](https://snapmakeru1-extended-firmware.pages.dev/afc-lite);
-the hardware and metadata calls are adapted to [Zmod](https://github.com/ghzserg/z_ad5x).
-The plugin detects the model by whether Zmod has an IFS (`zmod_ifs`).
+the hardware and metadata calls are adapted to [Z-Mod](https://github.com/ghzserg/z_ad5x).
+The plugin detects the model by whether Z-Mod has an IFS (`zmod_ifs`).
 
 - **AD5X:** IFS slots 1-4 become AFC lanes E0-E3 in unit `IFS`. All lanes feed
   the single Klipper `extruder`; the current lane is the slot loaded in the
@@ -15,7 +15,7 @@ The plugin detects the model by whether Zmod has an IFS (`zmod_ifs`).
   with its own extruder (`extruder`, `extruder1`, ...), like the Snapmaker U1.
   The current lane is the toolhead on the carriage.
 
-Zmod's `zmod_color` object provides filament presence, the current slot or
+Z-Mod's `zmod_color` object provides filament presence, the current slot or
 toolhead, color, and material information.
 
 ## Screenshots
@@ -50,11 +50,11 @@ dialog:
 
 ## Supported
 
-- AFC-style status for the four Zmod IFS slots or Creator 5 toolheads.
-- Load/unload through Zmod's native `IN_ZCOLOR` (AD5X) or `_T_IN_ZCOLOR`
+- AFC-style status for the four Z-Mod IFS slots or Creator 5 toolheads.
+- Load/unload through Z-Mod's native `IN_ZCOLOR` (AD5X) or `_T_IN_ZCOLOR`
   (Creator 5) command.
-- Color/material updates through Zmod's native `CHANGE_ZCOLOR` command.
-- Current logical tool display from Zmod's per-print `file.json` mapping.
+- Color/material updates through Z-Mod's native `CHANGE_ZCOLOR` command.
+- Current logical tool display from Z-Mod's per-print `file.json` mapping.
 - Chained IFS units through the [IFS Jacker plugin](https://github.com/ninjamida/ifs_jacker_plugin):
   while it is loaded, every channel it detects becomes a lane, grouped four per
   unit (`IFS_1`, `IFS_2`, ...). Without it, the plugin shows the single `IFS`
@@ -73,7 +73,7 @@ dialog:
 ## OrcaSlicer lane data
 
 OrcaSlicer reads each slot's filament from Moonraker's `lane_data` database
-namespace. Whenever a slot's color or material changes in Zmod (from the AFC
+namespace. Whenever a slot's color or material changes in Z-Mod (from the AFC
 panel in Mainsail or Fluidd, the printer screen, or the `COLOR` macro), the plugin updates that
 slot's `laneN` entry, where `N` is the 1-based slot number and `lane` holds the
 0-based slot index as a string.
@@ -83,7 +83,7 @@ the plugin only merges `color` and `material` into existing entries and
 leaves temperatures and other tools' fields alone. It skips color or material
 when HelixScreen has locked them (`helix_locked_color`,
 `helix_locked_material`), and after the first sync it writes a lane only when
-Zmod's own data for it changes. It deletes only `laneN` entries it created
+Z-Mod's own data for it changes. It deletes only `laneN` entries it created
 itself, once their slot no longer exists (e.g. an IFS Jacker unit is removed).
 
 Options in the `[zmod_afclite]` section:
@@ -101,7 +101,7 @@ spoolman_clear_on_empty: True           # forget a lane's spool when it is empti
 The filament dialog's material field in Mainsail and Fluidd is a free-text
 box; the plugin cannot turn it into a dropdown. Instead it shows a material
 picker: a prompt with one button per material in the printer's own list
-(`valid_types` reported by Zmod: the built-in types plus any custom
+(`valid_types` reported by Z-Mod: the built-in types plus any custom
 `filament_<NAME>` entries in `[zmod_ifs]`, without the ones in
 `hide_filament_types`).
 
@@ -124,7 +124,7 @@ variable_material_prompt: False
 
 ## Filament weight
 
-Zmod does not measure filament. The filament dialogs in Mainsail and Fluidd
+Z-Mod does not measure filament. The filament dialogs in Mainsail and Fluidd
 will not apply a color or material until the lane has a weight, so every lane reports
 `default_weight` (1000 g) until you enter one. A weight entered in the dialog
 (`SET_WEIGHT`) is saved per lane in `save_variables` as
@@ -137,7 +137,7 @@ With [Spoolman](https://github.com/Donkie/Spoolman), each lane can be tied
 to a spool. Mainsail and Fluidd then show that spool's full details from
 Spoolman: vendor, filament name, temperatures, remaining and used weight, and
 a link to the spool. Assigning a spool also writes its color and material into
-the Zmod slot, so the printer screen, HelixScreen and OrcaSlicer match.
+the Z-Mod slot, so the printer screen, HelixScreen and OrcaSlicer match.
 
 Setup: point Moonraker at Spoolman in `mod_data/user.moonraker.conf`, then
 restart Moonraker:
@@ -171,7 +171,7 @@ spool.
   `zmod_afclite_spool_<lane>`.
 - The spool in the active slot is reported to Moonraker as the active spool,
   so Spoolman deducts the filament used while printing.
-- Spoolman materials Zmod does not know fall back as in SpoolSync (ASA to ABS,
+- Spoolman materials Z-Mod does not know fall back as in SpoolSync (ASA to ABS,
   PLA blends and COPE to PLA); otherwise the slot keeps its material.
 - When a lane's filament is pulled out of the IFS, its spool assignment is
   cleared, as AFC does on eject. Set `spoolman_clear_on_empty: False` in
@@ -180,30 +180,30 @@ spool.
 ## Not supported
 
 - AFC hubs, buffers, and runout routing.
-- AFC's global lane-to-tool mapping. Zmod selects mappings per print through
+- AFC's global lane-to-tool mapping. Z-Mod selects mappings per print through
   its own `COLOR` workflow; `SET_MAP` reports an explicit error rather than
   changing a different mapping.
-- Running on Zmod models other than the AD5X and Creator 5, or on stock
+- Running on Z-Mod models other than the AD5X and Creator 5, or on stock
   Snapmaker U1 firmware.
 
 ## Install
 
-Add the section in `zmod_afclite.moonraker.conf.example` to Zmod's
+Add the section in `zmod_afclite.moonraker.conf.example` to Z-Mod's
 `mod_data/user.moonraker.conf`. It points at
 <https://github.com/DIEHARDave/zmod_afclite>; adjust the plugin path if your
-Zmod installation uses another plugin directory. Then run:
+Z-Mod installation uses another plugin directory. Then run:
 
 ```gcode
 ENABLE_PLUGIN name=zmod_afclite
 ```
 
-Zmod runs `install.sh`, which adds only the uniquely named
+Z-Mod runs `install.sh`, which adds only the uniquely named
 `zmod_afclite.py` symlink to Klipper's extras directory. This keeps the plugin
-code in its own update-managed repository and does not replace files in Zmod,
+code in its own update-managed repository and does not replace files in Z-Mod,
 Klipper, or the generic `AFC*.py` module names. The script supports the Native
-Klipper and Klipper 13 extras paths documented by Zmod.
+Klipper and Klipper 13 extras paths documented by Z-Mod.
 
-Zmod loads `zmod_afclite.cfg` as a normal plugin configuration. That file loads
+Z-Mod loads `zmod_afclite.cfg` as a normal plugin configuration. That file loads
 the namespaced `[zmod_afclite]` module; the module registers the AFC status
 objects at runtime. If an AFC object with one of the required names already
 exists, startup stops with a conflict error rather than replacing it.
@@ -216,12 +216,12 @@ DISABLE_PLUGIN name=zmod_afclite
 
 The uninstall script removes only this plugin's namespaced link and exact
 legacy links from the previous installer version. It never removes regular
-Klipper/Zmod files or links owned by another plugin.
+Klipper/Z-Mod files or links owned by another plugin.
 
 ## Releases
 
 The update-manager entry uses `channel: stable`, so printers update to the
-newest **version tag**, not the newest commit on `main`. Zmod resets plugin
+newest **version tag**, not the newest commit on `main`. Z-Mod resets plugin
 checkouts to that tag. To ship changes, tag the commit and push the tag:
 
 ```sh
@@ -236,7 +236,7 @@ already-imported Python modules, so only a full restart loads the new
 ## Verify
 
 The plugin lives and updates under its own Moonraker update-manager entry. It
-does not patch Zmod's source, bundled Klipper modules, or printer configuration
+does not patch Z-Mod's source, bundled Klipper modules, or printer configuration
 outside its plugin config. Compatibility with the AFC panels in Mainsail and
 Fluidd necessarily uses the standard
 public Klipper objects and macros (`AFC`, `AFC_lane`, `CHANGE_TOOL`, and
@@ -245,5 +245,5 @@ related names); do not enable another AFC implementation at the same time.
 After Klipper restarts, check that the AFC panel in Mainsail or Fluidd shows
 lanes E0-E3. Try a
 non-destructive status query before using the load/unload controls. The
-adapter requires Zmod's `zmod_color` object and `CHANGE_ZCOLOR` command, plus
+adapter requires Z-Mod's `zmod_color` object and `CHANGE_ZCOLOR` command, plus
 `zmod_ifs` and `IN_ZCOLOR` on the AD5X or `_T_IN_ZCOLOR` on the Creator 5.

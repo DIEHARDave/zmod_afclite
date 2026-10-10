@@ -24,4 +24,4 @@ do
     fi
 done
 
-echo "Zmod AFC Lite Klipper module links removed"
+echo "Z-Mod AFC Lite Klipper module links removed"

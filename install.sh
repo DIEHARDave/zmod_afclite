@@ -1,5 +1,5 @@
 #!/bin/sh
-# Zmod's environment provides KLIPPER_DIR for the Klipper build that is running.
+# Z-Mod's environment provides KLIPPER_DIR for the Klipper build that is running.
 [ -f /usr/data/zmod/zmod/.shell/0.sh ] && . /usr/data/zmod/zmod/.shell/0.sh
 
 set -eu
@@ -8,7 +8,7 @@ PLUGIN_DIR=$(CDPATH= cd -- "$(dirname -- "$0")" && pwd -P)
 MODULE=zmod_afclite.py
 SOURCE="$PLUGIN_DIR/$MODULE"
 
-# The AD5X can have both the native Klipper and Zmod's Klipper 13 installed, so
+# The AD5X can have both the native Klipper and Z-Mod's Klipper 13 installed, so
 # link into every extras directory rather than guessing which one is running.
 linked=0
 for EXTRAS_DIR in \
@@ -38,7 +38,7 @@ do
         ln -s "$SOURCE" "$TARGET"
     fi
     linked=$((linked + 1))
-    echo "Zmod AFC Lite linked in $EXTRAS_DIR"
+    echo "Z-Mod AFC Lite linked in $EXTRAS_DIR"
 
     # Clean up links created by the previous installer, but only when they
     # belong to this plugin.
@@ -51,8 +51,8 @@ do
 done
 
 if [ "$linked" -eq 0 ]; then
-    echo "Could not find a supported Zmod Klipper extras directory" >&2
+    echo "Could not find a supported Z-Mod Klipper extras directory" >&2
     exit 1
 fi
 
-echo "Zmod AFC Lite installed"
+echo "Z-Mod AFC Lite installed"
