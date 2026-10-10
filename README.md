@@ -176,6 +176,32 @@ spool.
 - When a lane's filament is pulled out of the IFS, its spool assignment is
   cleared, as AFC does on eject. Set `spoolman_clear_on_empty: False` in
   `[zmod_afclite]` to keep assignments.
+- When a lane's color or material is changed outside the plugin (the stock
+  screen, Zmod's color picker, HelixScreen), its spool assignment is cleared:
+  that is a different filament, and Mainsail and Fluidd would otherwise keep
+  showing the old spool's name and material from Spoolman. Assigning a spool
+  again (spool picker, `SET_SPOOL_ID`, or an NFC tag) restores the details.
+
+## Stock Flashforge screen
+
+The plugin works with the stock Flashforge screen enabled (Zmod's `display`
+setting, `DISPLAY_ON`) as well as with it disabled (HelixScreen, Guppy, or no
+screen). With the stock screen, Zmod passes color, material, and load/unload
+commands to Flashforge's firmware, which applies them.
+
+On the Creator 5 everything works the same either way: its toolhead filament
+sensors are read by Klipper.
+
+On the AD5X, Flashforge's firmware drives the IFS while the stock screen is
+enabled, and Zmod reports every slot as empty. The plugin then reads which
+slots hold filament, and which one is loaded, from the firmware's local API
+(port 8898, the same `/detail` request Zmod uses), as the stock screen shows
+them, every few seconds. If the firmware does not answer (for a few seconds
+after boot, for example), lanes are shown loaded with their color and
+material rather than empty, and a lane's Spoolman spool is not cleared.
+
+Chained IFS units through the IFS Jacker are only available with the stock
+screen disabled; Zmod limits the stock screen to four slots.
 
 ## Not supported
 

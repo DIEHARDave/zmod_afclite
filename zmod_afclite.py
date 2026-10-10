@@ -3,6 +3,7 @@ import json
 import logging
 import os
 import threading
+import time
 import urllib.error
 import urllib.parse
 import urllib.request
@@ -34,6 +35,9 @@ SPOOLMAN_POLL = 2.0
 # Zmod briefly reports IFS slots as empty while it starts up, so a lane must
 # read empty this long before its spool assignment is cleared.
 SPOOLMAN_CLEAR_DELAY = 30.0
+# After SET_SPOOL_ID writes a spool's color and material into Zmod, changes to
+# that slot are its own for this long, not a different filament.
+SPOOLMAN_APPLY_GRACE = 10.0
 CARD_UIDS_FIELD = "card_uids"
 CARD_UIDS_FIELD_DEFINITION = {
     "name": "Card UIDs",
@@ -41,6 +45,13 @@ CARD_UIDS_FIELD_DEFINITION = {
     "order": 1,
     "default_value": json.dumps(""),
 }
+
+# With the stock Flashforge screen enabled, Flashforge's firmware drives the
+# AD5X's IFS and Zmod cannot see which slots hold filament. The firmware
+# reports them, like its screen shows them, through its local HTTP API.
+STOCK_API_PORT = 8898
+STOCK_API_POLL = 3.0
+STOCK_API_STALE = 15.0
 
 # Zmod's slot count (color_limit) is 4 for a single IFS, and grows to the IFS
 # Jacker's detected channel count when it chains several IFS units together.
@@ -59,7 +70,7 @@ UNIT_NAME = "IFS"
 TOOLCHANGER_UNIT_NAME = "C5"
 
 
-def moonraker_request(url, method, query=None, body=None, timeout=5):
+def json_request(url, method, query=None, body=None, timeout=5):
     if query:
         url += "?" + urllib.parse.urlencode(query)
     data = None if body is None else json.dumps(body).encode()
@@ -69,6 +80,75 @@ def moonraker_request(url, method, query=None, body=None, timeout=5):
     )
     with urllib.request.urlopen(request, timeout=timeout) as response:
         return json.load(response)
+
+
+class StockScreenStation:
+    """IFS slot presence and the loaded slot from Flashforge's firmware, read
+    on a worker thread while the stock screen is enabled on the AD5X."""
+
+    def __init__(self, printer, zmod_color):
+        self.zmod_color = zmod_color
+        self._data = None
+        self._time = 0.
+        self._stop = threading.Event()
+        printer.register_event_handler("klippy:disconnect", self._stop.set)
+        thread = threading.Thread(target=self._run, name="zmod_afclite stock screen")
+        thread.daemon = True
+        thread.start()
+
+    def latest(self):
+        """{"slots": {slot: has_filament}, "current_slot": n}, or None while
+        the firmware has not answered recently."""
+        if self._data is None or time.monotonic() - self._time > STOCK_API_STALE:
+            return None
+        return self._data
+
+    def _run(self):
+        url = None
+        failing = False
+        body = {
+            "serialNumber": getattr(self.zmod_color, "serialNumber", ""),
+            "checkCode": getattr(self.zmod_color, "checkCode", ""),
+        }
+        while not self._stop.is_set():
+            try:
+                if url is None:
+                    # The firmware listens on the printer's address only.
+                    ip = self.zmod_color.get_printer_ip()
+                    if not ip or ip == "Not found":
+                        raise OSError("printer IP address not found")
+                    url = f"http://{ip}:{STOCK_API_PORT}/detail"
+                self._data = self._parse(json_request(url, "POST", body=body))
+                self._time = time.monotonic()
+                if failing:
+                    LOGGER.info("Zmod AFC Lite: stock screen API reachable again")
+                failing = False
+            except Exception as exc:
+                url = None
+                if not failing:
+                    LOGGER.warning(
+                        "Zmod AFC Lite: unable to read IFS slots from the stock "
+                        "screen firmware: %s", exc
+                    )
+                failing = True
+            self._stop.wait(STOCK_API_POLL)
+
+    @staticmethod
+    def _parse(reply):
+        detail = (reply or {}).get("detail") or {}
+        if not detail.get("hasMatlStation"):
+            return None
+        info = detail.get("matlStationInfo") or {}
+        slots = {}
+        for slot in info.get("slotInfos") or []:
+            try:
+                slots[int(slot.get("slotId"))] = bool(slot.get("hasFilament"))
+            except (TypeError, ValueError):
+                continue
+        # currentLoadSlot is the slot loaded into the head (0 when none);
+        # currentSlot is the last one selected.
+        current = int(info.get("currentLoadSlot") or 0) or int(info.get("currentSlot") or 0)
+        return {"slots": slots, "current_slot": current}
 
 
 class AFCState:
@@ -94,6 +174,7 @@ class ZmodState:
         self.unit_name = UNIT_NAME
         self.ifs_jacker = None
         self.save_variables = None
+        self.station = None
         self.registered_units = 1
         self.default_weight = 0.
         self._eventtime = None
@@ -102,8 +183,16 @@ class ZmodState:
         self._mapping = {}
         self._bad_colors = set()
 
+    def zmod_status(self):
+        """zmod_color's status, the same data Moonraker reports for it."""
+        zmod_color = self.zmod_color or self.printer.lookup_object("zmod_color")
+        return zmod_color.get_status(self.printer.get_reactor().monotonic())
+
     def handle_connect(self):
-        self.toolchanger = self.printer.lookup_object("zmod_ifs", None) is None
+        # Zmod reports total_tools 1 on IFS models (AD5X) and one per toolhead
+        # on toolchangers (Creator 5). zmod_ifs is not used: Zmod does not
+        # provide it with the stock screen enabled.
+        self.toolchanger = int(self.zmod_status().get("total_tools", 1) or 1) > 1
         self.unit_name = TOOLCHANGER_UNIT_NAME if self.toolchanger else UNIT_NAME
         # Only the IFS Jacker plugin chains extra IFS units; without it, a
         # color_limit above 4 does not mean more physical slots.
@@ -128,6 +217,13 @@ class ZmodState:
                     "Zmod AFC Lite requires Zmod method "
                     f"{self.zmod_color.__class__.__name__}.{method}"
                 )
+        # Zmod versions that report filament_known fill in slot presence with
+        # the stock screen themselves; only older ones need the plugin to ask
+        # Flashforge's firmware.
+        status = self.zmod_status()
+        if (not self.toolchanger and status.get("display")
+                and "filament_known" not in status):
+            self.station = StockScreenStation(self.printer, self.zmod_color)
 
     def zmod_color_hex(self, color):
         """The color Zmod will store for a 6-digit RGB hex. The Creator 5 keeps
@@ -171,6 +267,7 @@ class ZmodState:
             "unit_count": 1,
             "current_slot": 0,
             "extruder_sensor": False,
+            "presence_known": True,
             "slots": {},
             "mapping": {},
             "variables": {},
@@ -199,11 +296,27 @@ class ZmodState:
         else:
             current_slot = int(status.get("channel", 0))
             extruder_sensor = bool(status.get("extruder_sensor"))
+        # With the stock Flashforge screen enabled (Zmod "display"), the
+        # AD5X's IFS is driven by Flashforge's firmware and Zmod reports every
+        # slot empty, so presence comes from the firmware's own API. The
+        # Creator 5 reads its toolhead sensors either way.
+        presence_known = self.toolchanger or not status.get("display")
+        if "filament_known" in status:
+            presence_known = self.toolchanger or bool(status["filament_known"])
+        station = self.station.latest() if self.station is not None else None
+        if station is not None:
+            for zmod_slot, has_filament in station["slots"].items():
+                if zmod_slot in slots:
+                    slots[zmod_slot] = dict(slots[zmod_slot], hasFilament=has_filament)
+            # Zmod's saved channel goes stale while the firmware drives the IFS.
+            current_slot = station["current_slot"]
+            presence_known = True
         return {
             "slot_count": slot_count,
             "unit_count": -(-slot_count // SLOTS_PER_UNIT),
             "current_slot": current_slot,
             "extruder_sensor": extruder_sensor,
+            "presence_known": presence_known,
             "slots": slots,
             "mapping": self._read_mapping(),
             "variables": dict(getattr(self.save_variables, "allVariables", None) or {}),
@@ -345,7 +458,7 @@ class LaneDataSync:
                 self._wake.set()
 
     def _request(self, method, query=None, body=None):
-        return moonraker_request(self.url, method, query, body)
+        return json_request(self.url, method, query, body)
 
     def _sync(self, desired, slot_count):
         try:
@@ -457,6 +570,8 @@ def normalize_card_uid(uid):
 
 
 class SpoolmanLink:
+    _UNSET = object()
+
     """Lane spool assignments backed by Spoolman.
 
     SET_SPOOL_ID looks a spool up by ID or NFC card UID through Moonraker's
@@ -474,11 +589,15 @@ class SpoolmanLink:
         self.clear_on_empty = clear_on_empty
         self.gcode = printer.lookup_object("gcode")
         self.webhooks = printer.lookup_object("webhooks")
-        # Spool last reported to Moonraker. Starting at None means a spool set
-        # outside this plugin is left alone until a lane with a spool is used.
-        self._active = None
+        # Spool last reported to Moonraker; _UNSET until the first report.
+        self._active = self._UNSET
+        self._ready_time = None
         self._loaded = set()
         self._empty_since = {}
+        # Last seen (color, material) per slot, and until when changes to a
+        # slot come from this plugin's own SET_SPOOL_ID.
+        self._filament = {}
+        self._applying = {}
         self._timer = None
         self.gcode.register_command(
             "SET_SPOOL_ID", self.cmd_SET_SPOOL_ID,
@@ -493,6 +612,7 @@ class SpoolmanLink:
         return SPOOLMAN_REMOTE_METHOD in methods
 
     def _handle_ready(self):
+        self._ready_time = self.reactor.monotonic()
         self._timer = self.reactor.register_timer(self._poll, self.reactor.NOW)
 
     def _handle_disconnect(self):
@@ -514,7 +634,7 @@ class SpoolmanLink:
 
         def run():
             try:
-                result = (moonraker_request(
+                result = (json_request(
                     self.url, "POST", body=payload, timeout=SPOOLMAN_TIMEOUT
                 ), None)
             except Exception as exc:
@@ -612,6 +732,7 @@ class SpoolmanLink:
                 material = "?"
         if color is None:
             color = status["color"].replace("#", "")
+        self._applying[lane.zmod_slot] = self.reactor.monotonic() + SPOOLMAN_APPLY_GRACE
         self.gcode.run_script_from_command(
             f"_AFC_SET_ZCOLOR SLOT={lane.zmod_slot} HEX={color} TYPE={material}"
         )
@@ -657,22 +778,45 @@ class SpoolmanLink:
     # Active spool ----------------------------------------------------------
 
     def _poll(self, eventtime):
-        if self.state.zmod_color is None or not self.available():
+        if self.state.zmod_color is None:
             return eventtime + SPOOLMAN_POLL
         try:
-            self._update(self.state.get(eventtime), eventtime)
+            snapshot = self.state.get(eventtime)
+            # Assignments are checked even while Spoolman is unreachable, so
+            # a filament change then is not missed.
+            self._check_assignments(snapshot, eventtime)
+            if self.available():
+                self._update(snapshot, eventtime)
         except Exception:
             LOGGER.exception("Zmod AFC Lite: Spoolman active spool update failed")
         return eventtime + SPOOLMAN_POLL
 
-    def _update(self, snapshot, eventtime):
-        if self.clear_on_empty:
+    def _check_assignments(self, snapshot, eventtime):
+        self._clear_changed(snapshot, eventtime)
+        if self.clear_on_empty and snapshot["presence_known"]:
             self._clear_removed(snapshot, eventtime)
-        active = None
+
+    def _update(self, snapshot, eventtime):
+        """Report the spool feeding the extruder as Moonraker's active spool,
+        which Spoolman's usage tracking and the Spoolman panel follow."""
+        if self._ready_time is not None and eventtime - self._ready_time < SPOOLMAN_CLEAR_DELAY:
+            # The head sensor and Zmod's slot data settle after startup.
+            return
         current = snapshot["current_slot"]
-        if snapshot["extruder_sensor"] and 1 <= current <= snapshot["slot_count"]:
+        loaded = 1 <= current <= snapshot["slot_count"]
+        if snapshot["extruder_sensor"] and not loaded:
+            # Filament is in the head but Zmod does not know from which slot
+            # (e.g. the stock firmware right after a reboot): keep the last.
+            return
+        active = None
+        if snapshot["extruder_sensor"]:
             lane = self.lanes.get(f"E{current - 1}")
             active = lane.spool_id(snapshot) if lane is not None else None
+        if self._active is self._UNSET and active is None and not any(
+                lane.spool_id(snapshot) for lane in self.lanes.values()):
+            # Nobody uses lane spools: leave a spool set outside this plugin.
+            self._active = None
+            return
         if active == self._active:
             return
         try:
@@ -681,6 +825,37 @@ class SpoolmanLink:
             LOGGER.info("Zmod AFC Lite: unable to set active spool: %s", exc)
             return
         self._active = active
+
+    def _clear_spool(self, lane, reason):
+        message = f"{lane.name}: {reason}, Spoolman spool cleared."
+        LOGGER.info("Zmod AFC Lite: %s", message)
+        self.reactor.register_callback(
+            lambda e, name=lane.name.lower(): self.gcode.run_script(
+                f"SAVE_VARIABLE VARIABLE={SPOOL_VARIABLE_PREFIX}{name} VALUE=0\n"
+                f"RESPOND MSG=\"{message}\""
+            )
+        )
+
+    def _clear_changed(self, snapshot, eventtime):
+        """Forget a lane's spool once its color or material is changed outside
+        this plugin (stock screen, Zmod's color picker, HelixScreen): that is
+        a different filament, and Mainsail and Fluidd would otherwise keep
+        showing the spool's name and material from Spoolman."""
+        for zmod_slot, slot in snapshot["slots"].items():
+            current = (
+                str(slot.get("HEX", "")).replace("#", "").upper(),
+                str(slot.get("Material", "")).upper(),
+            )
+            previous = self._filament.get(zmod_slot)
+            self._filament[zmod_slot] = current
+            if eventtime < self._applying.get(zmod_slot, 0.):
+                continue
+            self._applying.pop(zmod_slot, None)
+            if previous is None or previous == current:
+                continue
+            lane = self.lanes.get(f"E{zmod_slot - 1}")
+            if lane is not None and lane.spool_id(snapshot):
+                self._clear_spool(lane, "filament changed outside the AFC panel")
 
     def _clear_removed(self, snapshot, eventtime):
         """Forget a lane's spool once its filament has been taken out of the
@@ -703,12 +878,7 @@ class SpoolmanLink:
             self._empty_since.pop(zmod_slot, None)
             lane = self.lanes.get(f"E{zmod_slot - 1}")
             if lane is not None and lane.spool_id(snapshot):
-                LOGGER.info("Zmod AFC Lite: %s emptied, clearing its spool", lane.name)
-                self.reactor.register_callback(
-                    lambda e, name=lane.name.lower(): self.gcode.run_script(
-                        f"SAVE_VARIABLE VARIABLE={SPOOL_VARIABLE_PREFIX}{name} VALUE=0"
-                    )
-                )
+                self._clear_spool(lane, "filament removed")
 
 
 def unit_names(unit_count, base=UNIT_NAME):
@@ -775,8 +945,9 @@ class AFC:
                 slot_count = self._saved_slot_count
             except (TypeError, ValueError):
                 pass
-            zmod_ifs = self.printer.lookup_object("zmod_ifs", None)
-            slot_count = max(slot_count, int(getattr(zmod_ifs, "color_limit", 0) or 0))
+            slot_count = max(
+                slot_count, int(self.state.zmod_status().get("color_limit", 0) or 0)
+            )
         for name, obj in self._new_objects(slot_count).items():
             if self.printer.lookup_object(name, None) is not None:
                 raise self.printer.config_error(
@@ -920,7 +1091,11 @@ class AFCLane:
         active = self.zmod_slot <= state["slot_count"]
         slot = state["slots"].get(self.zmod_slot, {}) if active else {}
 
-        loaded = bool(slot.get("hasFilament"))
+        # Without presence data, a slot is shown loaded rather than empty so
+        # its color and material stay visible.
+        loaded = bool(slot.get("hasFilament")) or (
+            active and bool(slot) and not state["presence_known"]
+        )
         if self.state.toolchanger:
             # Each lane feeds its own toolhead, as on the U1.
             tool_loaded = loaded
