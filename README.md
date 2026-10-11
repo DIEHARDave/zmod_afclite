@@ -51,8 +51,11 @@ dialog:
 ## Supported
 
 - AFC-style status for the four Zmod IFS slots or Creator 5 toolheads.
-- Load/unload through Zmod's native `IN_ZCOLOR` (AD5X) or `_T_IN_ZCOLOR`
-  (Creator 5) command.
+- Load/unload through Zmod's native commands: `IN_ZCOLOR` on the AD5X;
+  `_T_IN_ZCOLOR` to load and `UNLOAD_FILAMENT` to unload on the Creator 5.
+  On the Creator 5 the head filament sensors are returned to Zmod's idle
+  setup afterwards, so inserting filament into any head still opens the
+  color dialog.
 - Color/material updates through Zmod's native `CHANGE_ZCOLOR` command.
 - Current logical tool display from Zmod's per-print `file.json` mapping.
 - Chained IFS units through the [IFS Jacker plugin](https://github.com/ninjamida/ifs_jacker_plugin):
@@ -272,4 +275,5 @@ After Klipper restarts, check that the AFC panel in Mainsail or Fluidd shows
 lanes E0-E3. Try a
 non-destructive status query before using the load/unload controls. The
 adapter requires Zmod's `zmod_color` object and `CHANGE_ZCOLOR` command, plus
-`zmod_ifs` and `IN_ZCOLOR` on the AD5X or `_T_IN_ZCOLOR` on the Creator 5.
+`zmod_ifs` and `IN_ZCOLOR` on the AD5X or `_T_IN_ZCOLOR` and
+`UNLOAD_FILAMENT` on the Creator 5.
