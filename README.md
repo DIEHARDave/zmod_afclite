@@ -58,6 +58,15 @@ dialog:
 - The Creator 5 has no automatic unload (the filament is cut at the head and
   pulled out by hand), so its Unload button in Mainsail and Fluidd shows that
   reminder instead of moving the printer.
+- Load and unload progress and errors, reported as AFC does: `current_state`
+  is `loading` or `unloading` while Zmod works, and a Zmod failure (such as
+  "Filament 1 stalled in IFS") sets `error_state` and `message`, which
+  HelixScreen, Mainsail and Fluidd show. `AFC_RESET`, `RESET_FAILURE` or
+  `AFC_CLEAR_MESSAGE` clears it once the jam is fixed. `TOOL_UNLOAD` without
+  `LANE` unloads the lane in the toolhead.
+- HelixScreen's lane **Clear** (an empty `SET_MATERIAL` and `SET_COLOR` with
+  `SET_WEIGHT WEIGHT=0`) leaves Zmod's color and material as they are, since
+  every Zmod slot keeps both, and returns the lane to the default weight.
 - Color/material updates through Zmod's native `CHANGE_ZCOLOR` command.
 - Current logical tool display from Zmod's per-print `file.json` mapping.
 - Chained IFS units through the [IFS Jacker plugin](https://github.com/ninjamida/ifs_jacker_plugin):
@@ -133,7 +142,8 @@ Zmod does not measure filament. The filament dialogs in Mainsail and Fluidd
 will not apply a color or material until the lane has a weight, so every lane reports
 `default_weight` (1000 g) until you enter one. A weight entered in the dialog
 (`SET_WEIGHT`) is saved per lane in `save_variables` as
-`zmod_afclite_weight_<lane>` and survives reboots. Set `default_weight: 0` to
+`zmod_afclite_weight_<lane>` and survives reboots. `SET_WEIGHT WEIGHT=0`, as
+AFC uses to empty a lane, returns it to the default. Set `default_weight: 0` to
 hide weights, at the cost of entering one each time you pick a filament.
 
 ## Spoolman

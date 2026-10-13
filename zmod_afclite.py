@@ -153,6 +153,9 @@ class StockScreenStation:
 
 class AFCState:
     IDLE = "idle"
+    LOADING = "loading"
+    UNLOADING = "unloading"
+    ERROR = "error"
 
 
 class AFCLaneState:
@@ -921,6 +924,21 @@ class AFC:
             "_AFC_SET_ZCOLOR", self.cmd_AFC_SET_ZCOLOR,
             desc="Set a Zmod slot's color and material without Zmod's picker",
         )
+        # A lane load or unload in progress, and the error of the last one that
+        # failed. Clients such as HelixScreen follow an operation through
+        # current_state and show a failure from error_state and message, as
+        # with AFC; without them a Zmod stall left the screen on "Loading".
+        self.operation = None
+        self.error_message = ""
+        self.gcode.register_command(
+            "_AFC_LANE_OP", self.cmd_AFC_LANE_OP,
+            desc="Load or unload a lane with Zmod and report the result as AFC",
+        )
+        for name in ("AFC_RESET", "RESET_FAILURE", "AFC_CLEAR_MESSAGE"):
+            self.gcode.register_command(
+                name, self.cmd_AFC_CLEAR_ERROR,
+                desc="Clear the last AFC lane error",
+            )
 
         moonraker_url = config.get("moonraker_url", "http://127.0.0.1:7125")
         self.lane_data = None
@@ -979,6 +997,42 @@ class AFC:
         self.gcode.run_script_from_command(
             f"CHANGE_ZCOLOR SLOT={slot} HEX={zmod_color} TYPE={material} SILENT=1"
         )
+
+    def cmd_AFC_LANE_OP(self, gcmd):
+        unload = gcmd.get("ACTION", "load").lower() == "unload"
+        lane_name = gcmd.get("LANE", "").strip().upper()
+        if not lane_name and unload:
+            # TOOL_UNLOAD without LANE (HelixScreen's error screen and its
+            # unload with no lane picked) means the lane in the toolhead.
+            state = self.state.get(None)
+            if 1 <= state["current_slot"] <= state["slot_count"]:
+                lane_name = f"E{state['current_slot'] - 1}"
+        if lane_name not in self.lanes:
+            if lane_name:
+                raise gcmd.error(f"Unknown lane {lane_name!r}.")
+            raise gcmd.error(
+                "LANE is required: no lane is loaded." if unload
+                else "LANE is required."
+            )
+        self.error_message = ""
+        self.operation = AFCState.UNLOADING if unload else AFCState.LOADING
+        try:
+            self.gcode.run_script_from_command(
+                f"_AFC_ZMOD_LANE LANE={lane_name} "
+                f"ACTION={'unload' if unload else 'load'}"
+            )
+        except self.gcode.error as exc:
+            self.error_message = f"{lane_name}: {exc}"
+            raise
+        finally:
+            self.operation = None
+
+    def cmd_AFC_CLEAR_ERROR(self, gcmd):
+        # There are no AFC lane motors or failure latches to reset; the error
+        # was Zmod's, which recovers by itself once the jam is cleared.
+        if self.error_message:
+            gcmd.respond_info(f"Cleared: {self.error_message}")
+        self.error_message = ""
 
     def _new_objects(self, slot_count):
         """Create the lane and unit objects needed for slot_count slots that do
@@ -1046,13 +1100,16 @@ class AFC:
             "current_load": None,
             "current_lane": current_lane,
             "next_lane": None,
-            "current_state": AFCState.IDLE,
+            "current_state": (
+                AFCState.ERROR if self.error_message
+                else self.operation or AFCState.IDLE
+            ),
             "current_toolchange": 0,
             "number_of_toolchanges": 0,
             "spoolman": self.spoolman.available(),
             "td1_present": False,
             "lane_data_enabled": False,
-            "error_state": False,
+            "error_state": bool(self.error_message),
             "bypass_state": False,
             "quiet_mode": False,
             "position_saved": False,
@@ -1070,7 +1127,12 @@ class AFC:
             "extruders": [],
             "hubs": [],
             "buffers": [],
-            "message": "",
+            # AFC's message shape; HelixScreen only reads it as an object and
+            # treats an empty text as the error being cleared.
+            "message": {
+                "message": self.error_message,
+                "type": "error" if self.error_message else "",
+            },
             "led_state": "",
         }
 
