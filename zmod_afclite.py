@@ -15,10 +15,16 @@ FILE_CONFIG = "/usr/data/config/mod_data/file.json"
 # OrcaSlicer reads filament per slot from Moonraker's lane_data namespace. On the
 # AD5X, HelixScreen and SpoolSync already keep "lane1".."lane4" there, so the
 # same keys are used and only color/material are merged into existing entries.
+# On the Creator 5 HelixScreen keeps "T0".."T3"; an entry is found by its
+# "lane" field, so those are updated instead of adding laneN duplicates.
 LANE_DATA_NAMESPACE = "lane_data"
 LANE_DATA_POLL = 2.0
 LANE_DATA_RETRY = 10.0
 LANE_DATA_OWNER_KEY = "zmod_afclite"
+# The Zmod colour last mirrored into an entry. Zmod only stores its palette
+# colours, so a writer with the spool's exact colour (zmod_nfc) keeps it until
+# Zmod's own colour for the slot changes.
+LANE_DATA_ZMOD_COLOR_KEY = "zmod_afclite_color"
 UNSET_MATERIALS = ("NONE", "N/A", "?", "")
 # save_variables key for a lane's weight; keep in sync with SET_WEIGHT.
 WEIGHT_VARIABLE_PREFIX = "zmod_afclite_weight_"
@@ -463,6 +469,14 @@ class LaneDataSync:
     def _request(self, method, query=None, body=None):
         return json_request(self.url, method, query, body)
 
+    @staticmethod
+    def _target_key(current, key, lane):
+        """The entry holding this lane under another key (HelixScreen's T0..T3
+        on the Creator 5), else our laneN key."""
+        others = sorted(k for k, v in current.items()
+                        if k != key and isinstance(v, dict) and str(v.get("lane")) == lane)
+        return others[0] if others else key
+
     def _sync(self, desired, slot_count):
         try:
             current = self._request("GET", {"namespace": LANE_DATA_NAMESPACE})
@@ -475,18 +489,28 @@ class LaneDataSync:
         for key, zmod in desired.items():
             if self._synced.get(key) == zmod:
                 continue
-            existing = current.get(key)
+            target = self._target_key(current, key, zmod["lane"])
+            own = current.get(key)
+            if target != key and isinstance(own, dict) and own.get(LANE_DATA_OWNER_KEY):
+                # A duplicate this plugin made before it looked for the lane.
+                self._request("DELETE", {"namespace": LANE_DATA_NAMESPACE, "key": key})
+            existing = current.get(target)
             value = copy.deepcopy(existing) if isinstance(existing, dict) else {
                 LANE_DATA_OWNER_KEY: True,
             }
             value["lane"] = zmod["lane"]
-            if not value.get("helix_locked_color"):
+            mirrored = value.get(LANE_DATA_ZMOD_COLOR_KEY)
+            # Entries zmod_nfc set before this key existed keep their colour.
+            exact = value.get("color") and (
+                mirrored == zmod["color"] or (mirrored is None and value.get("zmod_nfc_uid")))
+            if not value.get("helix_locked_color") and not exact:
                 value["color"] = zmod["color"]
+            value[LANE_DATA_ZMOD_COLOR_KEY] = zmod["color"]
             if zmod["material"] is not None and not value.get("helix_locked_material"):
                 value["material"] = zmod["material"]
             if value != existing:
                 self._request("POST", body={
-                    "namespace": LANE_DATA_NAMESPACE, "key": key, "value": value,
+                    "namespace": LANE_DATA_NAMESPACE, "key": target, "value": value,
                 })
             self._synced[key] = zmod
 
