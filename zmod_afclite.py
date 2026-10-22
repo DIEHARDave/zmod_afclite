@@ -21,9 +21,9 @@ LANE_DATA_NAMESPACE = "lane_data"
 LANE_DATA_POLL = 2.0
 LANE_DATA_RETRY = 10.0
 LANE_DATA_OWNER_KEY = "zmod_afclite"
-# The Zmod colour last mirrored into an entry. Zmod only stores its palette
-# colours, so a writer with the spool's exact colour (zmod_nfc) keeps it until
-# Zmod's own colour for the slot changes.
+# The Zmod color last mirrored into an entry. Zmod only stores its palette
+# colors, so a writer with the spool's exact color (zmod_nfc) keeps it until
+# Zmod's own color for the slot changes.
 LANE_DATA_ZMOD_COLOR_KEY = "zmod_afclite_color"
 UNSET_MATERIALS = ("NONE", "N/A", "?", "")
 # save_variables key for a lane's weight; keep in sync with SET_WEIGHT.
@@ -500,7 +500,7 @@ class LaneDataSync:
             }
             value["lane"] = zmod["lane"]
             mirrored = value.get(LANE_DATA_ZMOD_COLOR_KEY)
-            # Entries zmod_nfc set before this key existed keep their colour.
+            # Entries zmod_nfc set before this key existed keep their color.
             exact = value.get("color") and (
                 mirrored == zmod["color"] or (mirrored is None and value.get("zmod_nfc_uid")))
             if not value.get("helix_locked_color") and not exact:
