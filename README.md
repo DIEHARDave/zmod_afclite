@@ -87,18 +87,29 @@ dialog:
 ## OrcaSlicer lane data
 
 OrcaSlicer reads each slot's filament from Moonraker's `lane_data` database
-namespace. Whenever a slot's color or material changes in Zmod (from the AFC
-panel in Mainsail or Fluidd, the printer screen, or the `COLOR` macro), the plugin updates that
-slot's `laneN` entry, where `N` is the 1-based slot number and `lane` holds the
-0-based slot index as a string.
+namespace. The plugin keeps each slot's entry matching what Zmod has loaded:
+it writes a slot's `laneN` entry when its color, material or presence changes
+in Zmod (from the AFC panel in Mainsail or Fluidd, the printer screen, or the
+`COLOR` macro). `N` is the 1-based slot number and `lane` holds the 0-based slot
+index as a string. On the Creator 5, where HelixScreen keeps `T0`..`T3`, the
+entry with the same `lane` is updated instead.
 
-On the AD5X, HelixScreen and SpoolSync also keep `lane1`..`lane4` there, so
-the plugin only merges `color` and `material` into existing entries and
-leaves temperatures and other tools' fields alone. It skips color or material
-when HelixScreen has locked them (`helix_locked_color`,
-`helix_locked_material`), and after the first sync it writes a lane only when
-Zmod's own data for it changes. It deletes only `laneN` entries it created
-itself, once their slot no longer exists (e.g. an IFS Jacker unit is removed).
+Other writers keep their own entries in the same namespace (HelixScreen and
+SpoolSync on the AD5X, HelixScreen from Spoolman on the Creator 5), so the
+plugin also rechecks every 15 seconds and corrects any entry that no longer
+matches Zmod:
+
+- A spool's exact color is kept while Zmod stores it as the same color (on the
+  Creator 5, the same palette entry); otherwise Zmod's color replaces it.
+- When the color or material no longer matches, the fields that describe that
+  spool (spool ID, name, vendor, weights, temperatures) are removed, since they
+  belong to a spool that is not in the slot.
+- An empty slot gets an empty `material`, which OrcaSlicer shows as no filament.
+- Color or material locked in HelixScreen (`helix_locked_color`,
+  `helix_locked_material`) is never changed.
+
+It deletes only `laneN` entries it created itself, once their slot no longer
+exists (e.g. an IFS Jacker unit is removed).
 
 Options in the `[zmod_afclite]` section:
 

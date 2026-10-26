@@ -17,13 +17,24 @@ FILE_CONFIG = "/usr/data/config/mod_data/file.json"
 # same keys are used and only color/material are merged into existing entries.
 # On the Creator 5 HelixScreen keeps "T0".."T3"; an entry is found by its
 # "lane" field, so those are updated instead of adding laneN duplicates.
+# Zmod's slots are what is loaded, so an entry another writer leaves on a
+# different spool (HelixScreen rewrites them from Spoolman when it starts) is
+# corrected on the next recheck.
 LANE_DATA_NAMESPACE = "lane_data"
 LANE_DATA_POLL = 2.0
 LANE_DATA_RETRY = 10.0
+LANE_DATA_RECHECK = 15.0
+# Fields that describe one particular spool; dropped from an entry once its
+# color or material no longer matches what Zmod has in the slot.
+LANE_DATA_SPOOL_KEYS = (
+    "spool_id", "spool_name", "name", "vendor", "vendor_name",
+    "helix_spoolman_filament_id", "spoolman_vendor_id",
+    "remaining_weight_g", "total_weight_g", "nozzle_temp", "bed_temp",
+    "zmod_nfc_uid",
+)
 LANE_DATA_OWNER_KEY = "zmod_afclite"
-# The Zmod color last mirrored into an entry. Zmod only stores its palette
-# colors, so a writer with the spool's exact color (zmod_nfc) keeps it until
-# Zmod's own color for the slot changes.
+# Written by earlier versions to track the Zmod color last mirrored; removed
+# from entries now.
 LANE_DATA_ZMOD_COLOR_KEY = "zmod_afclite_color"
 UNSET_MATERIALS = ("NONE", "N/A", "?", "")
 # save_variables key for a lane's weight; keep in sync with SET_WEIGHT.
@@ -387,9 +398,11 @@ class LaneDataSync:
     """Mirror Zmod's slot color/material into Moonraker's lane_data namespace.
 
     The reactor timer only takes a snapshot of Zmod's slots; HTTP runs on a
-    worker thread so Klipper never blocks on Moonraker. After one reconcile at
-    startup, a lane is written only when Zmod's own data for it changes, so
-    other writers (HelixScreen, SpoolSync) are never fought over."""
+    worker thread so Klipper never blocks on Moonraker. Entries are rechecked
+    every LANE_DATA_RECHECK seconds and written only where they disagree with
+    Zmod: an exact spool color from another writer (zmod_nfc, SpoolSync,
+    HelixScreen) stays while it is the same Zmod color, and an empty slot has
+    no material."""
 
     def __init__(self, printer, state, url):
         self.printer = printer
@@ -400,8 +413,8 @@ class LaneDataSync:
         self._wake = threading.Event()
         self._stop = False
         self._desired = None
+        self._palette = []
         self._slot_count = 0
-        self._synced = {}
         self._timer = None
         self._thread = None
         printer.register_event_handler("klippy:ready", self._handle_ready)
@@ -437,10 +450,19 @@ class LaneDataSync:
                     "lane": str(zmod_slot - 1),
                     "color": self.state.color(zmod_slot, slot),
                     "material": None if material in UNSET_MATERIALS else material,
+                    # As the lane's AFC status: without presence data a slot
+                    # counts as loaded.
+                    "loaded": bool(slot.get("hasFilament")) or not snapshot["presence_known"],
                 }
+            palette = []
+            for entry in self.state.zmod_status().get("palette") or []:
+                entry = str(entry).replace("#", "").upper()
+                if len(entry) == 6:
+                    palette.append(entry)
             with self._lock:
-                changed = desired != self._desired
+                changed = desired != self._desired or palette != self._palette
                 self._desired = desired
+                self._palette = palette
                 self._slot_count = snapshot["slot_count"]
             if changed:
                 self._wake.set()
@@ -450,17 +472,20 @@ class LaneDataSync:
 
     def _run(self):
         while not self._stop:
-            self._wake.wait()
+            # Woken by a change in Zmod's slots, else a recheck for entries
+            # another writer changed.
+            self._wake.wait(LANE_DATA_RECHECK)
             self._wake.clear()
             if self._stop:
                 break
             with self._lock:
                 desired = copy.deepcopy(self._desired)
+                palette = list(self._palette)
                 slot_count = self._slot_count
             if desired is None:
                 continue
             try:
-                self._sync(desired, slot_count)
+                self._sync(desired, palette, slot_count)
             except Exception as exc:
                 LOGGER.warning("Zmod AFC Lite: lane_data sync failed, retrying: %s", exc)
                 self._wake.wait(LANE_DATA_RETRY)
@@ -477,7 +502,56 @@ class LaneDataSync:
                         if k != key and isinstance(v, dict) and str(v.get("lane")) == lane)
         return others[0] if others else key
 
-    def _sync(self, desired, slot_count):
+    @staticmethod
+    def _same_zmod_color(color, zmod_color, palette):
+        """True when Zmod would store `color` as `zmod_color`: equal, or the
+        same entry of the Creator 5's palette, so a spool's exact color is
+        kept rather than replaced by Zmod's approximation."""
+        def bare(value):
+            return str(value or "").replace("#", "").upper()[:6]
+
+        color, zmod_color = bare(color), bare(zmod_color)
+        if color == zmod_color:
+            return True
+        if not palette or len(color) != 6:
+            return False
+        try:
+            int(color, 16)
+        except ValueError:
+            return False
+        return nearest_palette_color(color, palette) == zmod_color
+
+    @classmethod
+    def _lane_value(cls, existing, zmod, palette):
+        """The entry to store for one lane, starting from what is there."""
+        value = copy.deepcopy(existing) if isinstance(existing, dict) else {
+            LANE_DATA_OWNER_KEY: True,
+        }
+        value["lane"] = zmod["lane"]
+        value.pop(LANE_DATA_ZMOD_COLOR_KEY, None)  # from versions that tracked it
+        if not zmod["loaded"]:
+            # Empty: OrcaSlicer reads a lane without material as no filament.
+            for key in LANE_DATA_SPOOL_KEYS:
+                value.pop(key, None)
+            value["material"] = ""
+            value["color"] = zmod["color"]
+            return value
+
+        same_spool = True
+        if not value.get("helix_locked_color"):
+            if not cls._same_zmod_color(value.get("color"), zmod["color"], palette):
+                value["color"] = zmod["color"]
+                same_spool = False
+        if zmod["material"] is not None and not value.get("helix_locked_material"):
+            if str(value.get("material") or "").upper() != zmod["material"]:
+                value["material"] = zmod["material"]
+                same_spool = False
+        if not same_spool:
+            for key in LANE_DATA_SPOOL_KEYS:
+                value.pop(key, None)
+        return value
+
+    def _sync(self, desired, palette, slot_count):
         try:
             current = self._request("GET", {"namespace": LANE_DATA_NAMESPACE})
             current = current.get("result", {}).get("value") or {}
@@ -487,32 +561,17 @@ class LaneDataSync:
             current = {}
 
         for key, zmod in desired.items():
-            if self._synced.get(key) == zmod:
-                continue
             target = self._target_key(current, key, zmod["lane"])
             own = current.get(key)
             if target != key and isinstance(own, dict) and own.get(LANE_DATA_OWNER_KEY):
                 # A duplicate this plugin made before it looked for the lane.
                 self._request("DELETE", {"namespace": LANE_DATA_NAMESPACE, "key": key})
             existing = current.get(target)
-            value = copy.deepcopy(existing) if isinstance(existing, dict) else {
-                LANE_DATA_OWNER_KEY: True,
-            }
-            value["lane"] = zmod["lane"]
-            mirrored = value.get(LANE_DATA_ZMOD_COLOR_KEY)
-            # Entries zmod_nfc set before this key existed keep their color.
-            exact = value.get("color") and (
-                mirrored == zmod["color"] or (mirrored is None and value.get("zmod_nfc_uid")))
-            if not value.get("helix_locked_color") and not exact:
-                value["color"] = zmod["color"]
-            value[LANE_DATA_ZMOD_COLOR_KEY] = zmod["color"]
-            if zmod["material"] is not None and not value.get("helix_locked_material"):
-                value["material"] = zmod["material"]
+            value = self._lane_value(existing, zmod, palette)
             if value != existing:
                 self._request("POST", body={
                     "namespace": LANE_DATA_NAMESPACE, "key": target, "value": value,
                 })
-            self._synced[key] = zmod
 
         # Remove only entries this plugin created for slots that no longer
         # exist (an IFS Jacker unit was removed); never other writers' lanes.
@@ -525,7 +584,6 @@ class LaneDataSync:
                 continue
             if slot > slot_count:
                 self._request("DELETE", {"namespace": LANE_DATA_NAMESPACE, "key": key})
-                self._synced.pop(key, None)
 
 
 def resolve_material(material, valid_types):
