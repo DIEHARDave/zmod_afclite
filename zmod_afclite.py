@@ -24,6 +24,9 @@ LANE_DATA_NAMESPACE = "lane_data"
 LANE_DATA_POLL = 2.0
 LANE_DATA_RETRY = 10.0
 LANE_DATA_RECHECK = 15.0
+# Polls Zmod's slots must read the same before they are written. Right after
+# boot the IFS reports every slot empty until its sensors are read.
+LANE_DATA_SETTLE_POLLS = 3
 # Fields that describe one particular spool; dropped from an entry once its
 # color or material no longer matches what Zmod has in the slot.
 LANE_DATA_SPOOL_KEYS = (
@@ -414,6 +417,8 @@ class LaneDataSync:
         self._stop = False
         self._desired = None
         self._palette = []
+        self._reading = None
+        self._settled = 0
         self._slot_count = 0
         self._timer = None
         self._thread = None
@@ -459,6 +464,14 @@ class LaneDataSync:
                 entry = str(entry).replace("#", "").upper()
                 if len(entry) == 6:
                     palette.append(entry)
+            reading = (desired, palette)
+            if reading != self._reading:
+                self._reading = reading
+                self._settled = 1
+            elif self._settled < LANE_DATA_SETTLE_POLLS:
+                self._settled += 1
+            if self._settled < LANE_DATA_SETTLE_POLLS:
+                return eventtime + LANE_DATA_POLL
             with self._lock:
                 changed = desired != self._desired or palette != self._palette
                 self._desired = desired
@@ -530,11 +543,10 @@ class LaneDataSync:
         value["lane"] = zmod["lane"]
         value.pop(LANE_DATA_ZMOD_COLOR_KEY, None)  # from versions that tracked it
         if not zmod["loaded"]:
-            # Empty: OrcaSlicer reads a lane without material as no filament.
-            for key in LANE_DATA_SPOOL_KEYS:
-                value.pop(key, None)
+            # OrcaSlicer reads a lane without material as no filament. The
+            # rest stays, so a slot that only read empty for a moment keeps
+            # its spool.
             value["material"] = ""
-            value["color"] = zmod["color"]
             return value
 
         same_spool = True
@@ -543,9 +555,11 @@ class LaneDataSync:
                 value["color"] = zmod["color"]
                 same_spool = False
         if zmod["material"] is not None and not value.get("helix_locked_material"):
-            if str(value.get("material") or "").upper() != zmod["material"]:
+            material = str(value.get("material") or "").upper()
+            if material != zmod["material"]:
                 value["material"] = zmod["material"]
-                same_spool = False
+                # An empty material is the slot reading empty, not another spool.
+                same_spool = same_spool and not material
         if not same_spool:
             for key in LANE_DATA_SPOOL_KEYS:
                 value.pop(key, None)

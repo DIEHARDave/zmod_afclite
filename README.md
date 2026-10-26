@@ -104,7 +104,10 @@ matches Zmod:
 - When the color or material no longer matches, the fields that describe that
   spool (spool ID, name, vendor, weights, temperatures) are removed, since they
   belong to a spool that is not in the slot.
-- An empty slot gets an empty `material`, which OrcaSlicer shows as no filament.
+- An empty slot gets an empty `material`, which OrcaSlicer shows as no filament;
+  its other fields stay, so the spool is still there when the slot is reloaded.
+- Zmod's slots are written only after reading the same for about 6 seconds,
+  since the IFS reports every slot empty for a while after boot.
 - Color or material locked in HelixScreen (`helix_locked_color`,
   `helix_locked_material`) is never changed.
 
