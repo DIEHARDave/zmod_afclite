@@ -1255,8 +1255,11 @@ class AFCLane:
             active and bool(slot) and not state["presence_known"]
         )
         if self.state.toolchanger:
-            # Each lane feeds its own toolhead, as on the U1.
-            tool_loaded = loaded
+            # Each lane feeds its own toolhead, but a loaded lane is reported
+            # as in the lane, not in the head: AFC front ends disable Load on a
+            # tool_loaded lane, and Load (_T_IN_ZCOLOR) is also how a loaded
+            # head is primed.
+            tool_loaded = False
         else:
             tool_loaded = (
                 active
