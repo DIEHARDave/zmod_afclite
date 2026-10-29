@@ -33,7 +33,7 @@ LANE_DATA_SPOOL_KEYS = (
     "spool_id", "spool_name", "name", "vendor", "vendor_name",
     "helix_spoolman_filament_id", "spoolman_vendor_id",
     "remaining_weight_g", "total_weight_g", "nozzle_temp", "bed_temp",
-    "zmod_nfc_uid",
+    "ff_nfc_uid", "zmod_nfc_uid",   # FF_NFC's, and zmod_nfc's before it
 )
 LANE_DATA_OWNER_KEY = "zmod_afclite"
 # Written by earlier versions to track the Zmod color last mirrored; removed
@@ -403,7 +403,7 @@ class LaneDataSync:
     The reactor timer only takes a snapshot of Zmod's slots; HTTP runs on a
     worker thread so Klipper never blocks on Moonraker. Entries are rechecked
     every LANE_DATA_RECHECK seconds and written only where they disagree with
-    Zmod: an exact spool color from another writer (zmod_nfc, SpoolSync,
+    Zmod: an exact spool color from another writer (FF_NFC, SpoolSync,
     HelixScreen) stays while it is the same Zmod color, and an empty slot has
     no material."""
 
