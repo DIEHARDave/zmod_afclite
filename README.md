@@ -68,7 +68,9 @@ dialog:
   `SET_WEIGHT WEIGHT=0`) leaves Zmod's color and material as they are, since
   every Zmod slot keeps both, and returns the lane to the default weight.
 - Color/material updates through Zmod's native `CHANGE_ZCOLOR` command.
-- Current logical tool display from Zmod's per-print `file.json` mapping.
+- Current logical tool display from Zmod's per-print `file.json` mapping. On
+  the Creator 5, a lane the last print did not use shows its own toolhead
+  (`E2` → `T2`) instead of `NONE`.
 - Chained IFS units through the [IFS Jacker plugin](https://github.com/ninjamida/ifs_jacker_plugin):
   while it is loaded, every channel it detects becomes a lane, grouped four per
   unit (`IFS_1`, `IFS_2`, ...). Without it, the plugin shows the single `IFS`

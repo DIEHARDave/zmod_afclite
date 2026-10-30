@@ -1274,7 +1274,7 @@ class AFCLane:
             "lane": self.lane_index,
             "zmod_slot": self.zmod_slot,
             "extruder": self.extruder_name,
-            "map": state["mapping"].get(self.zmod_slot, "NONE"),
+            "map": self.tool_map(state),
             "load": loaded,
             "prep": loaded,
             "tool_loaded": tool_loaded,
@@ -1293,6 +1293,20 @@ class AFCLane:
         if weight > 0:
             status["weight"] = weight
         return status
+
+    def tool_map(self, state):
+        """The tool this lane serves in Zmod's per-print mapping. file.json only
+        lists the tools the last print used, so on a toolchanger an unlisted
+        lane falls back to its own toolhead, unless that tool is mapped
+        elsewhere."""
+        mapping = state["mapping"]
+        tool = mapping.get(self.zmod_slot)
+        if tool is not None:
+            return tool
+        own_tool = f"T{self.lane_index}"
+        if self.state.toolchanger and own_tool not in mapping.values():
+            return own_tool
+        return "NONE"
 
     def weight(self, state):
         """Weight saved by SET_WEIGHT, else the configured default. Zmod does
