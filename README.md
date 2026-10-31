@@ -1,5 +1,7 @@
 # Zmod AFC Lite
 
+> **Parts:** the printers, boards, readers and other gear that go with this project are listed at [projects.die-hard.net/gear](https://projects.die-hard.net/gear) (Amazon affiliate links).
+
 An independent AFC-compatible status and control adapter for **Zmod on the
 Flashforge AD5X with its four-slot IFS, and on the Flashforge Creator 5 with
 its four toolheads**.
