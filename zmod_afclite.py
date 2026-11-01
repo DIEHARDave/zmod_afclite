@@ -58,6 +58,8 @@ SPOOLMAN_CLEAR_DELAY = 30.0
 # After SET_SPOOL_ID writes a spool's color and material into Zmod, changes to
 # that slot are its own for this long, not a different filament.
 SPOOLMAN_APPLY_GRACE = 10.0
+# A spool whose color could not be fetched is tried again after this long.
+SPOOLMAN_COLOR_RETRY = 60.0
 CARD_UIDS_FIELD = "card_uids"
 CARD_UIDS_FIELD_DEFINITION = {
     "name": "Card UIDs",
@@ -205,6 +207,8 @@ class ZmodState:
         self._mapping_mtime = None
         self._mapping = {}
         self._bad_colors = set()
+        # Spoolman color ("RRGGBB" or None) per spool ID, kept by SpoolmanLink.
+        self.spool_colors = {}
 
     def zmod_status(self):
         """zmod_color's status, the same data Moonraker reports for it."""
@@ -381,11 +385,17 @@ class ZmodState:
                 break
         return self._mapping
 
-    def color(self, zmod_slot, slot):
+    def color(self, zmod_slot, slot, spool_id=None):
+        """The slot's color: the lane spool's own Spoolman color while Zmod
+        stores it as the slot's color (on the Creator 5, the same palette
+        entry), else Zmod's."""
         rgb = str(slot.get("HEX", "")).replace("#", "").upper()[:6]
         try:
             if len(rgb) == 6:
                 int(rgb, 16)
+                spool_color = self.spool_colors.get(spool_id)
+                if spool_color and self.zmod_color_hex(spool_color) == rgb:
+                    return f"#{spool_color}"
                 return f"#{rgb}"
         except ValueError:
             pass
@@ -697,6 +707,8 @@ class SpoolmanLink:
         # slot come from this plugin's own SET_SPOOL_ID.
         self._filament = {}
         self._applying = {}
+        # Spool ID -> monotonic time its color fetch last failed.
+        self._color_failed = {}
         self._timer = None
         self.gcode.register_command(
             "SET_SPOOL_ID", self.cmd_SET_SPOOL_ID,
@@ -868,6 +880,7 @@ class SpoolmanLink:
         else:
             spool = self._find_by_card(card_uid)
         self._save(lane, spool["id"])
+        self.state.spool_colors[spool["id"]] = spoolman_color(spool.get("filament") or {})
         self._apply(gcmd, lane, spool)
         filament = spool.get("filament") or {}
         vendor = (filament.get("vendor") or {}).get("name")
@@ -886,9 +899,29 @@ class SpoolmanLink:
             self._check_assignments(snapshot, eventtime)
             if self.available():
                 self._update(snapshot, eventtime)
+                self._fetch_colors(snapshot, eventtime)
         except Exception:
             LOGGER.exception("Zmod AFC Lite: Spoolman active spool update failed")
         return eventtime + SPOOLMAN_POLL
+
+    def _fetch_colors(self, snapshot, eventtime):
+        """Look up the Spoolman color of one lane spool not seen yet (spools
+        saved before a restart), so lanes show the spool's own color."""
+        for lane in self.lanes.values():
+            spool_id = lane.spool_id(snapshot)
+            if spool_id is None or spool_id in self.state.spool_colors:
+                continue
+            if eventtime - self._color_failed.get(spool_id, -SPOOLMAN_COLOR_RETRY)                     < SPOOLMAN_COLOR_RETRY:
+                continue
+            try:
+                spool = self._get_spool(spool_id)
+            except self.printer.command_error as exc:
+                self._color_failed[spool_id] = eventtime
+                LOGGER.info("Zmod AFC Lite: no color for spool %d: %s", spool_id, exc)
+                return
+            self._color_failed.pop(spool_id, None)
+            self.state.spool_colors[spool_id] = spoolman_color(spool.get("filament") or {})
+            return
 
     def _check_assignments(self, snapshot, eventtime):
         self._clear_changed(snapshot, eventtime)
@@ -1267,6 +1300,7 @@ class AFCLane:
                 and state["extruder_sensor"]
             )
         material = str(slot.get("Material", "NONE")).upper()
+        spool_id = self.spool_id(state) if active else None
 
         status = {
             "name": self.name,
@@ -1280,8 +1314,11 @@ class AFCLane:
             "tool_loaded": tool_loaded,
             "loaded_to_hub": False,
             "material": material,
-            "spool_id": self.spool_id(state) if active else None,
-            "color": self.state.color(self.zmod_slot, slot) if active else "#FFFFFF",
+            "spool_id": spool_id,
+            "color": (
+                self.state.color(self.zmod_slot, slot, spool_id) if active
+                else "#FFFFFF"
+            ),
             "runout_lane": "NONE",
             "filament_status": "unknown",
             "filament_status_led": "gray",
