@@ -199,6 +199,7 @@ class ZmodState:
         self.unit_name = UNIT_NAME
         self.ifs_jacker = None
         self.save_variables = None
+        self.print_stats = None
         self.station = None
         self.registered_units = 1
         self.default_weight = 0.
@@ -227,6 +228,7 @@ class ZmodState:
         # Lane weights, spool IDs and the slot count are kept in Zmod's
         # save_variables.
         self.save_variables = self.printer.lookup_object("save_variables", None)
+        self.print_stats = self.printer.lookup_object("print_stats", None)
 
     def jacker_detected(self):
         """True once the IFS Jacker has reported its channel count."""
@@ -345,9 +347,20 @@ class ZmodState:
             "extruder_sensor": extruder_sensor,
             "presence_known": presence_known,
             "slots": slots,
-            "mapping": self._read_mapping(),
+            "mapping": self._current_mapping(eventtime),
             "variables": dict(getattr(self.save_variables, "allVariables", None) or {}),
         }
+
+    def _current_mapping(self, eventtime):
+        """file.json outlives the print that wrote it. On a toolchanger each
+        lane is its own toolhead between prints, so the mapping only applies
+        while a print is running or paused."""
+        mapping = self._read_mapping()
+        if self.toolchanger and self.print_stats is not None:
+            state = self.print_stats.get_status(eventtime).get("state")
+            if state not in ("printing", "paused"):
+                return {}
+        return mapping
 
     def _read_mapping(self):
         """Zmod's per-print tool-to-slot mapping as {slot: "T<n>"}, re-read
