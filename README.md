@@ -1,5 +1,13 @@
 # Zmod AFC Lite
 
+> **Retired.** Zmod 1.7.5 and later has its own AFC panel, and its update
+> removes this plugin. What the built-in panel does not do (lane_data for
+> OrcaSlicer, the Creator 5 lane map between prints, lane spools that survive
+> a reboot) is in the replacement,
+> **[zmod_afcplus](https://github.com/DIEHARDave/zmod_afcplus)**, which also
+> copies this plugin's lane spools and weights over. This repository is
+> archived and gets no more updates; it still works on Zmod before 1.7.5.
+
 > **Parts:** the printers, boards, readers and other gear that go with this project are listed at [projects.die-hard.net/gear](https://projects.die-hard.net/gear) (Amazon affiliate links).
 
 An independent AFC-compatible status and control adapter for **Zmod on the
